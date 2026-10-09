@@ -63,7 +63,11 @@ public partial class App : Application
         _exiting = true;
         try
         {
-            if ((ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow is MainWindow main) await main.CancelInstallationAsync();
+            if ((ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow is MainWindow main)
+            {
+                await main.CancelInstallationAsync();
+                await main.CancelChatAsync();
+            }
             if (_viewModel is not null) await _viewModel.DisposeAsync();
         }
         finally { _tray?.Dispose(); (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown(); }

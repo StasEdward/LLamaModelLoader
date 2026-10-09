@@ -61,6 +61,8 @@ public sealed class LlamaOptions
     public string? ChatTemplate { get; set; }
     public bool? Jinja { get; set; }
     public string? Reasoning { get; set; }
+    public int? ReasoningBudget { get; set; } = 8192;
+    public string? ReasoningBudgetMessage { get; set; } = "Enough thinking. Act now: make the next tool call.";
     public int? Parallel { get; set; } = 1;
 }
 

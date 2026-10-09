@@ -6,7 +6,7 @@ using System.Text.Json;
 if (args.Contains("--version")) { Console.WriteLine("Fake llama-server test fixture 1.0"); return; }
 if (args.Contains("--help"))
 {
-    Console.WriteLine("--test-completion-delay --test-fail-batch --test-memory --spec-type --spec-draft-n-max --spec-draft-p-min --log-verbosity --verbosity -lv --verbose --log-disable --alias --metrics --model --host --port --parallel --ctx-size --gpu-layers --threads --threads-batch --batch-size --ubatch-size --flash-attn --cache-type-k --cache-type-v --load-mode --fit --temp --top-k --top-p --min-p --repeat-penalty --presence-penalty --frequency-penalty --seed --predict --jinja --no-jinja --chat-template --reasoning --test-delay --test-crash --test-stderr --test-no-health --test-args-file --test-health-flap");
+    Console.WriteLine("--test-completion-delay --test-fail-batch --test-memory --spec-type --spec-draft-n-max --spec-draft-p-min --log-verbosity --verbosity -lv --verbose --log-disable --alias --metrics --model --host --port --parallel --ctx-size --gpu-layers --threads --threads-batch --batch-size --ubatch-size --flash-attn --cache-type-k --cache-type-v --load-mode --fit --temp --top-k --top-p --min-p --repeat-penalty --presence-penalty --frequency-penalty --seed --predict --jinja --no-jinja --chat-template --reasoning --reasoning-budget --reasoning-budget-message --test-delay --test-crash --test-stderr --test-no-health --test-args-file --test-health-flap");
     return;
 }
 string? Value(string flag) { var i = Array.IndexOf(args, flag); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
@@ -53,6 +53,27 @@ async Task Handle(TcpClient client)
         if (header.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) length = int.Parse(header[15..].Trim());
     var requestBody = new char[length]; var read = 0;
     while (read < length) { var n = await reader.ReadAsync(requestBody.AsMemory(read)); if (n == 0) break; read += n; }
+    if (request.StartsWith("POST /v1/chat/completions "))
+    {
+        using var json = JsonDocument.Parse(new string(requestBody));
+        var root = json.RootElement;
+        if (root.GetProperty("model").GetString() != Value("--alias") || !root.GetProperty("stream").GetBoolean())
+            throw new InvalidDataException("Chat did not use the running alias and streaming mode");
+        var messages = root.GetProperty("messages");
+        var prompt = messages[messages.GetArrayLength() - 1].GetProperty("content").GetString()!;
+        var messageCount = messages.GetArrayLength();
+        await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"));
+        async Task Event(object value) => await stream.WriteAsync(Encoding.UTF8.GetBytes("data: " + JsonSerializer.Serialize(value) + "\n\n"));
+        await Event(new { choices = new[] { new { delta = new { reasoning_content = "Checking the test message." }, finish_reason = (string?)null } } });
+        await Task.Delay(200);
+        await Event(new { choices = new[] { new { delta = new { content = "Hello from the local model. " }, finish_reason = (string?)null } } });
+        if (prompt == "[stall]") await Task.Delay(3000);
+        await Task.Delay(150);
+        await Event(new { choices = new[] { new { delta = new { content = $"Received {messageCount} message(s)." }, finish_reason = (string?)null } } });
+        await Event(new { choices = new[] { new { delta = new { }, finish_reason = "stop" } }, usage = new { prompt_tokens = 30, completion_tokens = 16 } });
+        await stream.WriteAsync(Encoding.UTF8.GetBytes("data: [DONE]\n\n"));
+        return;
+    }
     if (request.StartsWith("POST /completion "))
     {
         using var json = JsonDocument.Parse(new string(requestBody));

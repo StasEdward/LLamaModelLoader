@@ -20,6 +20,7 @@ public static class Arguments
     {
         profile = new Configuration { Profiles = [profile] }.Clone().Profiles[0];
         SpeculativeOptions.ImportExtraArguments(profile);
+        ReasoningOptions.ImportExtraArguments(profile);
         if (settings.Port is < 1 or > 65535) throw new ArgumentException("Port: a number from 1 to 65535.");
         if (settings.StartupTimeoutSeconds is < 5 or > 86400) throw new ArgumentException("Loading timeout: from 5 to 86400 seconds.");
         if (string.IsNullOrWhiteSpace(profile.Name)) throw new ArgumentException("Enter a profile name.");

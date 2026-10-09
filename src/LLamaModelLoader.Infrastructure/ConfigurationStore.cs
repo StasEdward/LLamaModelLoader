@@ -59,7 +59,11 @@ public sealed class ConfigurationStore(string directory)
             throw new InvalidDataException("Invalid profiles in the configuration.");
         if (!value.Profiles.Any(p => p.Id == value.SelectedProfileId)) value.SelectedProfileId = null;
         value.SchemaVersion = 2;
-        foreach (var profile in value.Profiles) SpeculativeOptions.ImportExtraArguments(profile);
+        foreach (var profile in value.Profiles)
+        {
+            SpeculativeOptions.ImportExtraArguments(profile);
+            ReasoningOptions.ImportExtraArguments(profile);
+        }
         return value;
     }
 
@@ -72,7 +76,11 @@ public sealed class ConfigurationStore(string directory)
             if (_readOnly) throw new InvalidOperationException("Saving is disabled because the configuration could not be read.");
             configuration = configuration.Clone();
             configuration.SchemaVersion = 2;
-            foreach (var profile in configuration.Profiles) SpeculativeOptions.ImportExtraArguments(profile);
+            foreach (var profile in configuration.Profiles)
+            {
+                SpeculativeOptions.ImportExtraArguments(profile);
+                ReasoningOptions.ImportExtraArguments(profile);
+            }
             Directory.CreateDirectory(DirectoryPath);
             await using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
             {

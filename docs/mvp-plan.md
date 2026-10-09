@@ -14,6 +14,10 @@ The Optimize window now supports a bounded automatic candidate search and compar
 
 Settings now includes a llama.cpp installation manager for official Windows x64 CPU, Vulkan, and CUDA builds. It checks recent releases, pairs CUDA runtime archives, verifies downloads, probes staged executables, and keeps installations side by side. Users explicitly select a build, save Settings, and restart when ready. Background updates, automatic backend selection, driver installation, and old-build cleanup remain outside this iteration.
 
+The built-in Chat page now tests the running model through streaming chat completions, with in-memory conversation history, separate reasoning display, optional system instructions, output-token limits, cancellation, and copying. It requires a new conversation after the server session changes. Attachments, tool execution, Markdown rendering, and conversation persistence remain future work.
+
+Models now supports portable JSON export of one or all profiles and preview-based batch import. Imports get new IDs and collision-free names; local GGUF files are resolved by filename or selected manually. Missing weights can be linked later. Application settings and the running server are preserved.
+
 The sections below retain the original design for context. Current usage and limitations are documented in [README](../README.md); executed checks are recorded in [verification](verification.md).
 
 ## MVP scope
