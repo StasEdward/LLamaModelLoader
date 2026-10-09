@@ -260,6 +260,12 @@ The visible log keeps the last 500 lines and automatically scrolls to the latest
 
 ## Development and tests
 
+GitHub Actions runs a Release build, .NET tests, PowerShell 5.1/7 compatibility checks, and headless UI/layout checks for pull requests targeting `master`. Test reports and screenshots are retained as workflow artifacts for 14 days. Tests use fixtures; no GPU, model downloads, or credentials are required.
+
+Every push to `master`, including a merged PR, reruns these checks. On success, a separate job publishes a self-contained Windows x64 ZIP and SHA-256 file to [GitHub Releases](https://github.com/StasEdward/LLamaModelLoader/releases), tagged `build-<workflow run number>`. Rerunning the same workflow keeps an existing release intact. Only this release job has repository write permission. The SDK version comes from `global.json`.
+
+To require checks before merging, select **Windows build and tests** as a required status check in the repository's branch rules for `master`.
+
 Run the .NET test suite and PowerShell compatibility checks:
 
 ```powershell
