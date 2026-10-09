@@ -14,6 +14,16 @@ public static partial class ModelCatalog
     [GeneratedRegex(@"^(.*)-(\d{5})-of-(\d{5})\.gguf$", RegexOptions.IgnoreCase)]
     private static partial Regex SplitName();
 
+    public static IReadOnlyList<string> PartPaths(string path)
+    {
+        var inspected = Inspect(path);
+        if (inspected.Error is { } error) throw new IOException(error);
+        var match = SplitName().Match(path);
+        if (!match.Success) return [path];
+        return Enumerable.Range(1, int.Parse(match.Groups[3].Value))
+            .Select(i => $"{match.Groups[1].Value}-{i:D5}-of-{match.Groups[3].Value}.gguf").ToArray();
+    }
+
     public static ModelFile Inspect(string path)
     {
         try

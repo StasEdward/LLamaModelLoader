@@ -101,6 +101,9 @@ public partial class MainWindow : Window
         var web = Button("Open Web UI ↗", () => _vm.RunAsync(() => { Open(_vm.Status.BaseUrl!); return Task.CompletedTask; }));
         web.Bind(IsEnabledProperty, new Binding(nameof(MainViewModel.CanOpenWebUi)));
         var edit = Button("Edit profile", () => { if (_vm.SelectedProfile is { } profile) Editor(profile); return Task.CompletedTask; });
+        var optimize = Button("Optimize…", async () => { if (_vm.SelectedProfile is { } profile) await OptimizeAsync(profile); });
+        var metadata = new GgufMetadataView();
+        metadata.Bind(GgufMetadataView.ModelPathProperty, new Binding(nameof(MainViewModel.SelectedModelPath)));
         var log = new TextBox { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 11, MinHeight = 160, MaxHeight = 280 };
         log.Bind(TextBox.TextProperty, new Binding(nameof(MainViewModel.LogText)));
         var logs = new Expander { Header = "Server log", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Stack(log,
@@ -113,7 +116,8 @@ public partial class MainWindow : Window
         memoryCard.Bind(IsVisibleProperty, new Binding(nameof(MainViewModel.ShowMemory)));
         SetPage(new ScrollViewer { Content = Stack(Text("Model control", "title"), Text("Your local server. One profile per session.", "muted"), chooser,
             Card(Stack(BoundText(nameof(MainViewModel.ModelTitle), "title"), BoundText(nameof(MainViewModel.ModelDescription), "muted"), BoundText(nameof(MainViewModel.ModelInfo), "muted"),
-                progress, Row(start, stop, restart), changed, edit)), memoryCard,
+                progress, Row(start, stop, restart), changed, Row(edit, optimize))),
+            new Expander { Header = "GGUF metadata", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Card(metadata) }, memoryCard,
             Card(Stack(Text("OpenAI-compatible API", "muted"), BoundText(nameof(MainViewModel.ApiAddress)), Row(copy, web))), logs) });
     }
 
@@ -185,6 +189,9 @@ public partial class MainWindow : Window
         }));
         var sections = Stack(Text("Profile settings", "title"), Text("Saving does not change the running server's settings.", "muted"),
             Card(Stack(Field("Name", name, "Model name in the API (/v1/models). Passed as --alias; no commas. Changes apply after a restart."), Field("Description", description), Field("Model file", path), Row(browse, scan), catalog)));
+        var metadata = new GgufMetadataView();
+        metadata.Bind(GgufMetadataView.ModelPathProperty, new Binding(nameof(TextBox.Text)) { Source = path });
+        sections.Children.Add(new Expander { Header = "GGUF metadata", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Card(metadata) });
         foreach (var group in OptionCatalog.All.GroupBy(x => x.Group))
         {
             var panel = new StackPanel { Spacing = 18 };
@@ -213,7 +220,8 @@ public partial class MainWindow : Window
         sections.Children.Add(validation); sections.Children.Add(Field("Argument preview", preview));
         foreach (var box in new[] { name, description, path, extra }) box.TextChanged += (_, _) => Changed();
         var root = new DockPanel { LastChildFill = true };
-        var buttons = Row(Button("Save profile", () => _vm.RunAsync(async () => { await _vm.SaveProfileAsync(Read()); _dirty = false; Models(); }), true), Button("Cancel", () => NavigateAsync(Models)));
+        var buttons = Row(Button("Save profile", () => _vm.RunAsync(async () => { await _vm.SaveProfileAsync(Read()); _dirty = false; Models(); }), true),
+            Button("Optimize…", async () => { try { await OptimizeAsync(Read()); } catch (Exception ex) { _vm.Notice = ex.Message; } }), Button("Cancel", () => NavigateAsync(Models)));
         buttons.Margin = new Thickness(0, 16, 0, 0); DockPanel.SetDock(buttons, Dock.Bottom); root.Children.Add(buttons);
         root.Children.Add(new ScrollViewer { Content = sections }); SetPage(root); Changed(); _dirty = false;
         Dispatcher.UIThread.Post(() => editingReady = true, DispatcherPriority.Background);
@@ -258,6 +266,12 @@ public partial class MainWindow : Window
         return files.FirstOrDefault()?.TryGetLocalPath();
     }
     private static void Open(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+    private async Task OptimizeAsync(ModelProfile profile)
+    {
+        if (_vm.IsBusy || _vm.IsOptimizing || _vm.IsReadOnly || _vm.Status.State is ServerState.Starting or ServerState.Stopping)
+        { _vm.Notice = "Optimization is unavailable while loading, stopping, or another operation is running."; return; }
+        await new OptimizationWindow(_vm, profile).ShowDialog(this);
+    }
     private async Task<bool> ConfirmAsync(string title, string message)
     {
         var dialog = new Window { Title = title, Width = 480, Height = 220, CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner };

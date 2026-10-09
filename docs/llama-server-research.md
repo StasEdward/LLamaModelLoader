@@ -49,6 +49,8 @@ GGUF defines `general.name`, `general.architecture`, `general.description`, `gen
 
 ## Application decisions
 
+Implementation update (October 10, 2026): GGUF header inspection and a bounded performance optimizer are now implemented. The original MVP recommendations below remain historical scope decisions. The optimizer uses native streaming `/completion`, disables `cache_prompt`, fixes `n_predict`, `temperature`, `seed`, and `ignore_eos`, and validates timing counters and slot context. The endpoint contract is documented in the [server reference](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-completion-given-a-prompt-it-returns-the-predicted-completion). Actual compatibility and throughput still depend on the installed server and model; HTTP/process fixture tests do not establish real-model speedups.
+
 These are design recommendations from the research, not llama.cpp requirements.
 
 1. Treat the user-selected executable as authoritative. On change, read `--version`, `--help`, and `--list-devices` with timeouts; cache results by path, size, and modification time. Launch the file directly through process APIs, without a shell. Incomplete help parsing should produce a diagnostic, not imply universal support.

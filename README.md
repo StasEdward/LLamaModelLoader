@@ -12,6 +12,8 @@ Built with **.NET 10**, **Avalonia**, and **CommunityToolkit.Mvvm**. The interfa
 
 - **Server controls:** start, stop, and restart the selected model; open the server Web UI or copy its API address.
 - **Model profiles:** add, edit, duplicate, and delete profiles. Browse your models folder or select a GGUF file directly.
+- **GGUF metadata:** inspect architecture, stored parameter count, tensor quantization types, training context, layers, tokenizer, and chat template without loading weights.
+- **Performance optimization:** benchmark a bounded set of settings or compare saved profiles, then save the best measured candidate as a new profile.
 - **Launch settings:** configure context size, GPU layers, CPU threads, batching, Flash Attention, KV cache types, sampling, and chat options.
 - **Speculative decoding:** configure the method, maximum draft tokens, and minimum draft probability, including `draft-mtp` for compatible models.
 - **Memory breakdown:** see model weights, main KV cache, recurrent state, MTP KV cache, and compute buffers, with separate GPU and CPU/host totals.
@@ -95,6 +97,52 @@ For a server build and model that support MTP, configure:
 | Minimum draft token probability | `0.60` |
 
 These settings produce `--gpu-layers 99 --spec-type draft-mtp --spec-draft-n-max 2 --spec-draft-p-min 0.6`. MTP requires compatible weights; enabling the option alone does not make a model compatible.
+
+## GGUF metadata
+
+Expand **GGUF metadata** on Home or in the profile editor. The reader inspects GGUF v2/v3 headers and tensor descriptors, including all parts of a standard split GGUF, without loading tensor payloads. Reading runs in the background and is canceled when the selected path changes or the view closes.
+
+The card shows the embedded model name, architecture, size label when provided, stored parameter count, training context, layer count, tokenizer, vocabulary size, chat template, file size, and counts of tensors by type. The parameter count is the sum of stored tensor elements; it is not an estimate of active MoE parameters. Quantization is read from tensor descriptors, not inferred from the filename. The profile name remains independent.
+
+Missing metadata appears as unknown. Unsupported versions, malformed headers, missing shards, and inspection limits produce a message rather than blocking normal server launch. Inspection is bounded to 512 MiB of header data; individual strings retained for display are limited to 64 KiB. The format reference is the [GGUF specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md).
+
+<details>
+<summary>GGUF metadata preview</summary>
+
+![GGUF metadata read from a header-only demo fixture](docs/images/gguf-metadata.png)
+
+</details>
+
+## Optimize and compare profiles
+
+Click **Optimize…** on Home or in the profile editor. The editor can benchmark its current unsaved values without overwriting the saved profile.
+
+1. Choose **Optimize settings** or **Compare saved profiles**. Comparison is limited to profiles using the same model path.
+2. Set the context, output token count, repetitions, request timeout, and ranking goal. All candidates use the chosen context and one request slot. This can differ from the source profile; it is shown before testing.
+3. Select which groups may change. GPU layers and batch sizes are enabled by default. KV precision changes and MTP experiments are opt-in.
+4. Use **Preview candidates** to inspect the exact profile arguments, then **Run benchmark**.
+5. Inspect the results and choose **Save as new profile**. The original profile and current selection remain unchanged.
+
+The automatic search evaluates the baseline and up to eight alternatives, varying one group at a time: GPU layers `auto`/`all`, two batch/microbatch pairs, Q8/Q4 KV cache with Flash Attention, and MTP off/on. Unsupported flag groups are omitted. This is a bounded search, not an exhaustive tuner; it does not automatically combine winning changes. Compatible option values and MTP weights are checked by the actual server launch.
+
+Each candidate starts a fresh server, verifies the context through `/slots`, performs one discarded 16-token warm-up, and runs 1–5 measurements. Requests use native streaming `/completion`, the same editable prompt, disabled prompt caching, temperature 0, seed 42, and a fixed output length with EOS ignored. Native timing counters supply throughput; elapsed time to the first nonempty streamed text measures first-token latency. Truncated, cached, incomplete, or inconsistent workloads are excluded. Results show median speeds/latency. **Balanced** ranks by the geometric mean of prompt and generation throughput; the other goals rank by the corresponding throughput.
+
+GPU reserve defaults to 1024 MiB and requires NVIDIA telemetry. It is an eligibility check against sampled free memory on every NVIDIA device, including memory used by other applications, not a hard allocation limit. Set reserve to 0 to disable the constraint when telemetry is unavailable or irrelevant. Reported peaks are samples taken during the workload and may miss short-lived spikes; GPU usage covers all devices and applications. RAM is the managed process tree's working set.
+
+**A run temporarily stops the current model and interrupts its requests. Pause other clients before starting.** The application restores the previous running settings after completion or cancellation, or returns to Stopped if no model was running. Conversation caches are lost. Closing the optimizer cancels and waits for cleanup; exiting the application cancels without restarting the previous server. Restoration failures are displayed explicitly.
+
+Reports, including the prompt, candidate profiles, raw measurements, failures, and server version, are saved under `%LOCALAPPDATA%\LLamaModelLoader\benchmarks\`. These are performance measurements for the selected workload, not answer-quality evaluations. Changing KV precision can affect quality, and results from short prompts do not establish performance near maximum context.
+
+<details>
+<summary>Optimization setup and results</summary>
+
+![Optimization workload and candidate settings](docs/images/optimization-setup.png)
+
+![Benchmark results with a best measured candidate](docs/images/optimization-results.png)
+
+*Throughput uses fixture data. Memory readings are sampled host telemetry; this is a UI demonstration, not a real-model benchmark.*
+
+</details>
 
 ## Memory and statistics
 

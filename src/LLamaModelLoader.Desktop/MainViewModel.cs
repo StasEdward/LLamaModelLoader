@@ -14,6 +14,11 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly ServerController _server;
     private readonly SessionLog _log;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
+    private CancellationTokenSource? _optimizationCancellation;
+    private Task<OptimizationReport>? _optimizationTask;
+    private bool _disposing;
+    [ObservableProperty] private bool _isOptimizing;
+    public string? SelectedModelPath => SelectedProfile?.ModelPath;
     public Configuration Configuration { get; private set; }
     public bool IsReadOnly { get; }
     public bool HadConfiguration { get; }
@@ -24,10 +29,10 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     public bool ShowMemory => Status.State == ServerState.Ready;
     [ObservableProperty] private MemoryBreakdown _memory = MemoryBreakdown.Empty;
     public Task<ProcessResources?> ReadResourcesAsync(ServerStatus expected, CancellationToken token) => _server.ReadResourcesAsync(expected, token);
-    public bool CanChoose => !IsBusy && Status.State is ServerState.Stopped or ServerState.Failed;
+    public bool CanChoose => !IsBusy && !IsOptimizing && !_disposing && Status.State is ServerState.Stopped or ServerState.Failed;
     public bool CanStart => CanChoose && SelectedProfile is not null && !IsReadOnly;
-    public bool CanStop => Status.State is ServerState.Starting or ServerState.Ready;
-    public bool CanRestart => !IsBusy && Status.State == ServerState.Ready;
+    public bool CanStop => !IsOptimizing && !_disposing && Status.State is ServerState.Starting or ServerState.Ready;
+    public bool CanRestart => !IsBusy && !IsOptimizing && !_disposing && Status.State == ServerState.Ready;
     public bool CanOpenApi => Status.ApiAvailable;
     public bool CanOpenWebUi => Status.ApiAvailable && Status.WebUiEnabled;
     public string StatusText => Status.Message;
@@ -86,6 +91,8 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     }
     public async Task RunAsync(Func<Task> operation)
     {
+        if (_disposing) return;
+        if (IsOptimizing) { Notice = "An optimization is running. Cancel it in the optimization window first."; return; }
         try { IsBusy = true; Refresh(); Notice = ""; await operation(); }
         catch (OperationCanceledException) { Notice = "Operation canceled."; }
         catch (Exception ex) { Notice = ex.Message; _log.Add(ex.Message); }
@@ -94,11 +101,13 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     public async Task SelectAsync(Guid id)
     {
+        EnsureEditable();
         if (Status.State is not (ServerState.Stopped or ServerState.Failed) || id == Configuration.SelectedProfileId) return;
         await ChangeAsync(c => c.SelectedProfileId = id);
     }
     public async Task SaveProfileAsync(ModelProfile profile)
     {
+        EnsureEditable();
         Arguments.Build(Configuration.Settings, profile);
         var file = ModelCatalog.Inspect(profile.ModelPath);
         if (file.Error is not null) throw new ArgumentException(file.Error);
@@ -111,6 +120,7 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     }
     public async Task DeleteAsync(Guid id)
     {
+        EnsureEditable();
         if (Status.ProfileId == id && Status.State is ServerState.Starting or ServerState.Ready or ServerState.Stopping)
             throw new InvalidOperationException("Stop the active model first.");
         await ChangeAsync(c => { c.Profiles.RemoveAll(p => p.Id == id); if (c.SelectedProfileId == id) c.SelectedProfileId = null; });
@@ -123,6 +133,7 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     }
     public async Task SaveSettingsAsync(AppSettings settings)
     {
+        EnsureEditable();
         if (settings.Port is < 1 or > 65535 || settings.StartupTimeoutSeconds is < 5 or > 86400)
             throw new ArgumentException("Check the port (1–65535) and timeout (5–86400 seconds).");
         if (!Path.IsPathFullyQualified(settings.ServerPath) || !File.Exists(settings.ServerPath)) throw new FileNotFoundException("Select an existing llama-server.exe.");
@@ -154,10 +165,49 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     }
     private void Refresh()
     {
+        OnPropertyChanged(nameof(SelectedModelPath));
         OnPropertyChanged(nameof(ShowMemory));
         Memory = ShowMemory ? _server.Memory : MemoryBreakdown.Empty;
         foreach (var property in new[] { nameof(SelectedProfile), nameof(CanChoose), nameof(CanStart), nameof(CanStop), nameof(CanRestart), nameof(CanOpenApi), nameof(CanOpenWebUi), nameof(StatusText), nameof(ApiAddress), nameof(ModelTitle), nameof(ModelDescription), nameof(ModelInfo), nameof(NeedsRestart), nameof(IsLoading) }) OnPropertyChanged(property);
         StartCommand.NotifyCanExecuteChanged(); StopCommand.NotifyCanExecuteChanged(); RestartCommand.NotifyCanExecuteChanged();
     }
-    public async ValueTask DisposeAsync() { await _server.DisposeAsync(); await _log.DisposeAsync(); _saveGate.Dispose(); }
+    private void EnsureEditable()
+    {
+        if (IsReadOnly || IsOptimizing || _disposing) throw new InvalidOperationException("Configuration changes are unavailable during optimization or shutdown, or when configuration is read-only.");
+    }
+    public async Task<OptimizationReport> OptimizeAsync(IReadOnlyList<OptimizationCandidate> candidates, OptimizationOptions options, IProgress<string> progress)
+    {
+        EnsureEditable();
+        if (IsBusy) throw new InvalidOperationException("Wait for the current operation to finish.");
+        IsOptimizing = true; Refresh();
+        _optimizationCancellation = new CancellationTokenSource();
+        try
+        {
+            var settings = Configuration.Clone().Settings;
+            _optimizationTask = new OptimizationRunner(_server, _probe).RunAsync(settings, candidates, options, progress,
+                _optimizationCancellation.Token, () => !_disposing);
+            var report = await _optimizationTask;
+            try
+            {
+                var folder = Path.Combine(DataDirectory, "benchmarks"); Directory.CreateDirectory(folder);
+                var path = Path.Combine(folder, $"benchmark-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.json");
+                await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(report, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Notice = "Could not save benchmark report: " + ex.Message; }
+            return report;
+        }
+        finally
+        {
+            _optimizationTask = null;
+            _optimizationCancellation.Dispose(); _optimizationCancellation = null;
+            IsOptimizing = false; Refresh();
+        }
+    }
+    public void CancelOptimization() => _optimizationCancellation?.Cancel();
+    public async ValueTask DisposeAsync()
+    {
+        _disposing = true; CancelOptimization();
+        if (_optimizationTask is { } task) { try { await task; } catch { /* Shutdown still owns process cleanup. */ } }
+        await _server.DisposeAsync(); await _log.DisposeAsync(); _saveGate.Dispose();
+    }
 }
