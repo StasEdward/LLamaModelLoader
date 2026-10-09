@@ -54,6 +54,16 @@ The headless UI ran against a local fixture process and checked actual controlle
 
 The installed executable's help confirms `--log-verbosity` and trace level 4. Its existing verbosity-3 startup log omits native allocation details. The real server was not restarted, and the user's saved configuration was not changed. Validation against a complete real memory-allocation log awaits the next model launch. The parser reports recognized buffer allocations only; it does not claim to measure total device VRAM or resident host memory.
 
+## llama.cpp installation management — October 10, 2026
+
+The final Release build and self-contained Windows publish completed without warnings or errors; all **97 .NET tests passed**. Installer checks cover official-release filtering (including source-only and rolling releases), exact CUDA runtime pairing, SHA-256 and size verification, untrusted URL rejection, ZIP traversal, reserved Windows paths, duplicate entries, symlink/reparse entries, canceled downloads, cancellation after probing, failed probes, and preservation of previous installations. Installations are only promoted after validation. Fixture HTTP requests do not access GitHub.
+
+Headless UI checks exercise release discovery, download and extraction, a real version/help probe of the fixture executable, persisted installation selection, returning a path without saving Settings, and cancellation while closing the window. Existing model-control, memory, statistics, metadata, and optimizer UI checks remain included. Final screenshots in `artifacts/screenshots-installations-final` were visually inspected; the manager preview is committed under `docs/images`.
+
+An opt-in network smoke check downloaded and installed the official Windows x64 CPU build **b11538** in `artifacts/installer-check/managed`. Its reported version was `0.6.0-dev (build 11538, commit 79e2e74eb)`, compiled with Clang 20.1.8. The downloaded archive passed the upstream SHA-256 check; version/help probing and manifest discovery succeeded. No model was loaded, and the user's active server and saved Settings were not changed. Actual CUDA/Vulkan downloads and GPU inference were not exercised; CUDA archive pairing and colocated extraction use fixtures, with the flat runtime layout checked against the upstream release workflow.
+
+The manager uses the official [GitHub release API](https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30) and [Windows CUDA packaging workflow](https://github.com/ggml-org/llama.cpp/blob/79e2e74eb/.github/workflows/release.yml). The `/releases/latest` endpoint alone is unsuitable here because v0.6.0 has no binary assets, while b11538 is labeled as a prerelease.
+
 ## GGUF metadata and performance optimization — October 10, 2026
 
 The Release build completed with no warnings or errors; all 73 .NET tests passed. Added checks cover little-endian GGUF v2/v3 and big-endian v3, skipped vocabulary arrays, tensor type/element counts without payloads, split files, cancellation, malformed/truncated/oversized headers, and arithmetic overflow.

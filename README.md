@@ -11,6 +11,7 @@ Built with **.NET 10**, **Avalonia**, and **CommunityToolkit.Mvvm**. The interfa
 ## Features
 
 - **Server controls:** start, stop, and restart the selected model; open the server Web UI or copy its API address.
+- **llama.cpp installations:** download official Windows x64 CPU, Vulkan, or CUDA builds, check for updates, and switch between installed versions.
 - **Model profiles:** add, edit, duplicate, and delete profiles. Browse your models folder or select a GGUF file directly.
 - **GGUF metadata:** inspect architecture, stored parameter count, tensor quantization types, training context, layers, tokenizer, and chat template without loading weights.
 - **Performance optimization:** benchmark a bounded set of settings or compare saved profiles, then save the best measured candidate as a new profile.
@@ -26,7 +27,7 @@ Built with **.NET 10**, **Avalonia**, and **CommunityToolkit.Mvvm**. The interfa
 | Component | Requirement |
 | --- | --- |
 | Operating system | Windows x64 |
-| Inference server | A local `llama-server.exe` installation with its required backend libraries |
+| Inference server | Install through Settings, or select an existing `llama-server.exe` with its backend libraries |
 | Model | A GGUF model supported by that server build |
 | Build from source | .NET SDK **10.0.401**, or a newer patch allowed by [global.json](global.json) |
 | NVIDIA telemetry | `nvidia-smi` available to the application |
@@ -55,7 +56,7 @@ Launch `LLamaModelLoader.Desktop.exe` from the published folder. Keep all files 
 
 ## Quick start
 
-1. Open **Settings**, choose `llama-server.exe`, and set your models folder.
+1. Open **Settings**, choose an existing `llama-server.exe` or use **Install / update llama.cpp…**, set your models folder, and **Save settings**.
 2. Open **Models → Add model**. Select a GGUF file, give the profile a name, and save it.
 3. On **Home**, select the profile and click **Start**.
 4. Wait for **Model ready**, then open the Web UI or connect a client to `http://127.0.0.1:8080/v1`.
@@ -64,6 +65,30 @@ Launch `LLamaModelLoader.Desktop.exe` from the published folder. Keep all files 
 The port is configurable. The server binds to loopback for local access. Multiple profiles may use the same model file; deleting a profile leaves the weights on disk. For a split GGUF, select the first `00001` shard.
 
 Closing the window hides the application in the system tray when the tray is available. **Exit** or **Exit and stop server** closes the application and terminates its server process tree. **Stop**, **Restart**, and **Exit** interrupt unfinished requests. Only one application instance and one managed server run at a time.
+
+## Install and update llama.cpp
+
+Open **Settings → Install / update llama.cpp…**:
+
+1. Click **Check for updates** to load the 30 most recent official GitHub releases. Source-only releases are skipped; rolling/prerelease builds are labeled. Supported archives must have published SHA-256 checksums.
+2. Select a release and backend: **CPU**, **Vulkan**, or an available **CUDA version**. The total download size includes any required CUDA runtime archive.
+3. Click **Install selected build**. The app downloads and verifies the archives, extracts them, and checks `llama-server --version` and `--help` before accepting the installation. This does not load a model.
+4. Choose **Use selected build**, then **Save settings**. Start or restart the model to use that executable. Installing alone does not change the saved path or stop a running server.
+
+Each release/backend is stored in its own folder under `%LOCALAPPDATA%\LLamaModelLoader\servers`. Existing external installations remain usable. To roll back, select an older entry under **Installed builds**, use it, save Settings, and restart. Older installations are retained; automatic background updates and automatic cleanup are not implemented.
+
+For CUDA, the app downloads the server and the **matching runtime DLL archive from the same release**, placing them together. Choose a CUDA version supported by your NVIDIA driver; the app does not install drivers, select CUDA automatically, or change the system `PATH`. A successful version/help check does not guarantee that a particular model or GPU workload will run.
+
+Updates are checked on demand. Internet access to the GitHub API and release downloads is required; public API rate limits can delay checks. Cancellation or validation failure leaves existing installations and Settings intact. Downloads are staged inside the managed folder, so allow space for both the ZIP archives and their extracted files.
+
+<details>
+<summary>Installation manager preview</summary>
+
+![llama.cpp installation manager](docs/images/server-installations.png)
+
+*Demo release and fixture executable from automated UI checks.*
+
+</details>
 
 ## Model settings
 
@@ -191,6 +216,7 @@ The script discovers the model ID automatically. Optional parameters include `-M
 | Configuration | `%LOCALAPPDATA%\LLamaModelLoader\config.json` |
 | Configuration backup | `%LOCALAPPDATA%\LLamaModelLoader\config.json.bak` |
 | Server logs | `%LOCALAPPDATA%\LLamaModelLoader\logs\` |
+| Managed llama.cpp builds | `%LOCALAPPDATA%\LLamaModelLoader\servers\` |
 
 Set `LLAMAMODELLOADER_DATA_DIR` to use a different data directory. Configuration writes are atomic; damaged files are preserved during recovery. The application reads configuration schemas 1 and 2 and saves schema 2.
 
@@ -215,6 +241,12 @@ dotnet build LLamaModelLoader.slnx -c Release -m:1
 dotnet run --project tests/SmokeChecks -c Release --no-build -- render artifacts/screenshots
 ```
 
+An optional installer smoke check downloads the latest supported official **CPU** build into the specified folder and checks its version/help. It does not load a model or change application Settings:
+
+```powershell
+dotnet run --project tests/SmokeChecks -c Release --no-build -- install artifacts/installer-smoke
+```
+
 An optional real-model smoke check starts a separate server on port `18089`, sends an inference request, restarts it, and stops it:
 
 ```powershell
@@ -230,7 +262,7 @@ dotnet run --project tests/SmokeChecks -c Release --no-build -- real 'D:\llama_c
 
 ## Current scope
 
-This version manages one local server. Model downloads, llama.cpp installation or updates, LAN hosting, multiple simultaneous servers, and an integrated chat are not implemented. GPU telemetry currently supports NVIDIA only. Available launch options and memory details depend on the selected llama.cpp build.
+This version manages one local server. Model downloads, LAN hosting, multiple simultaneous servers, and an integrated chat are not implemented. Managed llama.cpp downloads support Windows x64 CPU, Vulkan, and CUDA; other backends can be installed manually and selected by path. GPU telemetry currently supports NVIDIA only. Available launch options and memory details depend on the selected llama.cpp build.
 
 For implementation notes and verification results, see the [MVP plan](docs/mvp-plan.md), [llama.cpp option research](docs/llama-server-research.md), and [verification report](docs/verification.md).
 

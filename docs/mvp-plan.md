@@ -12,6 +12,8 @@ GGUF v2/v3 header inspection is now available on Home and in the profile editor,
 
 The Optimize window now supports a bounded automatic candidate search and comparison of saved profiles for the same model. Context and slot count stay fixed; KV precision and MTP changes require opt-in. A native streaming benchmark ranks completed measurements, records sampled memory, restores the previous running configuration, and saves chosen results as new profiles. This is the first tuning iteration; combining winning groups, broader search, and quality evaluation remain future work.
 
+Settings now includes a llama.cpp installation manager for official Windows x64 CPU, Vulkan, and CUDA builds. It checks recent releases, pairs CUDA runtime archives, verifies downloads, probes staged executables, and keeps installations side by side. Users explicitly select a build, save Settings, and restart when ready. Background updates, automatic backend selection, driver installation, and old-build cleanup remain outside this iteration.
+
 The sections below retain the original design for context. Current usage and limitations are documented in [README](../README.md); executed checks are recorded in [verification](verification.md).
 
 ## MVP scope

@@ -240,7 +240,17 @@ public partial class MainWindow : Window
         var version = Text("", "muted");
         var page = Stack(Text("Settings", "title"), Text("General application and local server settings.", "muted"),
             Card(Stack(Field("llama-server.exe", exe), Row(Button("Browse executable…", () => _vm.RunAsync(async () => { var path = await PickFileAsync("Select llama-server.exe", ["*.exe"]); if (path is not null) exe.Text = path; })),
-                Button("Check server", () => _vm.RunAsync(async () => { version.Text = "Checking…"; var capabilities = await _vm.ProbeAsync(exe.Text ?? ""); version.Text = capabilities.Version + $"\nRecognized options: {capabilities.Flags.Count}"; }))), version,
+                Button("Check server", () => _vm.RunAsync(async () => { version.Text = "Checking…"; var capabilities = await _vm.ProbeAsync(exe.Text ?? ""); version.Text = capabilities.Version + $"\nRecognized options: {capabilities.Flags.Count}"; })),
+                Button("Install / update llama.cpp…", async () =>
+                {
+                    _installations = new ServerInstallationsWindow(_vm.DataDirectory, exe.Text ?? "");
+                    try
+                    {
+                        var path = await _installations.ShowDialog<string?>(this);
+                        if (path is not null) { exe.Text = path; version.Text = "Build selected. Save settings to use it on the next start or restart."; }
+                    }
+                    finally { _installations = null; }
+                })), version,
                 Field("Models folder", models), Button("Browse folder…", () => _vm.RunAsync(async () =>
                 {
                     var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Models folder", AllowMultiple = false });
@@ -259,6 +269,9 @@ public partial class MainWindow : Window
         SetPage(new ScrollViewer { Content = page }); _dirty = false;
         Dispatcher.UIThread.Post(() => editingReady = true, DispatcherPriority.Background);
     }
+
+    private ServerInstallationsWindow? _installations;
+    public Task CancelInstallationAsync() => _installations?.CancelAndWaitAsync() ?? Task.CompletedTask;
 
     private async Task<string?> PickFileAsync(string title, string[] patterns)
     {

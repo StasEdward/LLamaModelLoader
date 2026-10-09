@@ -9,7 +9,7 @@ using LLamaModelLoader.Core;
 using LLamaModelLoader.Desktop;
 using LLamaModelLoader.Infrastructure;
 
-if (args.Length < 2) throw new ArgumentException("Usage: SmokeChecks render OUTPUT_DIRECTORY | real SERVER_EXE MODEL_GGUF OUTPUT_DIRECTORY");
+if (args.Length < 2) throw new ArgumentException("Usage: SmokeChecks render OUTPUT_DIRECTORY | install OUTPUT_DIRECTORY | real SERVER_EXE MODEL_GGUF OUTPUT_DIRECTORY | metadata MODEL_GGUF | observe BASE_URL");
 if (args[0] == "render")
 {
     var directory = Path.GetFullPath(args[1]); Directory.CreateDirectory(directory);
@@ -176,6 +176,7 @@ if (args[0] == "render")
         Console.WriteLine("UI: edited context saved");
         Click("⚙  Settings"); await Snapshot("settings.png");
         if (!window.GetVisualDescendants().OfType<TextBlock>().Any(x => x.Text == "Settings")) throw new Exception("Settings navigation failed");
+        await InstallationSmokeChecks.RunAsync(window, directory, fixture);
         window.Close();
         return true;
     }, CancellationToken.None);
@@ -183,6 +184,20 @@ if (args[0] == "render")
     // This is a dedicated screenshot process. All application resources were disposed in Dispatch;
     // terminate the headless rendering host, which can keep its dispatcher alive on Windows.
     Environment.Exit(0);
+}
+else if (args[0] == "install")
+{
+    // Explicit opt-in: downloads and probes an official CPU build, without loading a model or editing Settings.
+    var directory = Path.GetFullPath(args[1]);
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+    using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+    var builds = await new ServerReleaseClient(http).GetBuildsAsync(timeout.Token);
+    var build = builds.First(b => b.Backend == "cpu");
+    var installer = new ServerInstaller(directory, http);
+    var installed = await installer.InstallAsync(build, new Progress<InstallationProgress>(p => Console.WriteLine(p.Message)), timeout.Token);
+    Console.WriteLine(installed.Version);
+    Console.WriteLine("Verified official CPU installation: " + installed.ExecutablePath);
+    if (!installer.GetInstalled().Any(i => i.ExecutablePath == installed.ExecutablePath)) throw new Exception("Installation was not persisted");
 }
 else if (args[0] == "real")
 {
