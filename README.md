@@ -11,7 +11,10 @@ Built with **.NET 10**, **Avalonia**, and **CommunityToolkit.Mvvm**. The interfa
 ## Features
 
 - **Server controls:** start, stop, and restart the selected model; open the server Web UI or copy its API address.
+- **Built-in chat:** test the running model with streaming replies, a separate thinking panel, multi-turn history, and request cancellation.
+- **llama.cpp installations:** download official Windows x64 CPU, Vulkan, or CUDA builds, check for updates, and switch between installed versions.
 - **Model profiles:** add, edit, duplicate, and delete profiles. Browse your models folder or select a GGUF file directly.
+- **Profile import/export:** share one profile or all profiles as portable JSON, review imports, and locate matching local GGUF files.
 - **GGUF metadata:** inspect architecture, stored parameter count, tensor quantization types, training context, layers, tokenizer, and chat template without loading weights.
 - **Performance optimization:** benchmark a bounded set of settings or compare saved profiles, then save the best measured candidate as a new profile.
 - **Launch settings:** configure context size, GPU layers, CPU threads, batching, Flash Attention, KV cache types, sampling, and chat options.
@@ -26,7 +29,7 @@ Built with **.NET 10**, **Avalonia**, and **CommunityToolkit.Mvvm**. The interfa
 | Component | Requirement |
 | --- | --- |
 | Operating system | Windows x64 |
-| Inference server | A local `llama-server.exe` installation with its required backend libraries |
+| Inference server | Install through Settings, or select an existing `llama-server.exe` with its backend libraries |
 | Model | A GGUF model supported by that server build |
 | Build from source | .NET SDK **10.0.401**, or a newer patch allowed by [global.json](global.json) |
 | NVIDIA telemetry | `nvidia-smi` available to the application |
@@ -55,7 +58,7 @@ Launch `LLamaModelLoader.Desktop.exe` from the published folder. Keep all files 
 
 ## Quick start
 
-1. Open **Settings**, choose `llama-server.exe`, and set your models folder.
+1. Open **Settings**, choose an existing `llama-server.exe` or use **Install / update llama.cpp…**, set your models folder, and **Save settings**.
 2. Open **Models → Add model**. Select a GGUF file, give the profile a name, and save it.
 3. On **Home**, select the profile and click **Start**.
 4. Wait for **Model ready**, then open the Web UI or connect a client to `http://127.0.0.1:8080/v1`.
@@ -64,6 +67,40 @@ Launch `LLamaModelLoader.Desktop.exe` from the published folder. Keep all files 
 The port is configurable. The server binds to loopback for local access. Multiple profiles may use the same model file; deleting a profile leaves the weights on disk. For a split GGUF, select the first `00001` shard.
 
 Closing the window hides the application in the system tray when the tray is available. **Exit** or **Exit and stop server** closes the application and terminates its server process tree. **Stop**, **Restart**, and **Exit** interrupt unfinished requests. Only one application instance and one managed server run at a time.
+
+## Install and update llama.cpp
+
+Open **Settings → Install / update llama.cpp…**:
+
+1. Click **Check for updates** to load the 30 most recent official GitHub releases. Source-only releases are skipped; rolling/prerelease builds are labeled. Supported archives must have published SHA-256 checksums.
+2. Select a release and backend: **CPU**, **Vulkan**, or an available **CUDA version**. The total download size includes any required CUDA runtime archive.
+3. Click **Install selected build**. The app downloads and verifies the archives, extracts them, and checks `llama-server --version` and `--help` before accepting the installation. This does not load a model.
+4. Choose **Use selected build**, then **Save settings**. Start or restart the model to use that executable. Installing alone does not change the saved path or stop a running server.
+
+Each release/backend is stored in its own folder under `%LOCALAPPDATA%\LLamaModelLoader\servers`. Existing external installations remain usable. To roll back, select an older entry under **Installed builds**, use it, save Settings, and restart. Older installations are retained; automatic background updates and automatic cleanup are not implemented.
+
+For CUDA, the app downloads the server and the **matching runtime DLL archive from the same release**, placing them together. Choose a CUDA version supported by your NVIDIA driver; the app does not install drivers, select CUDA automatically, or change the system `PATH`. A successful version/help check does not guarantee that a particular model or GPU workload will run.
+
+Updates are checked on demand. Internet access to the GitHub API and release downloads is required; public API rate limits can delay checks. Cancellation or validation failure leaves existing installations and Settings intact. Downloads are staged inside the managed folder, so allow space for both the ZIP archives and their extracted files.
+
+<details>
+<summary>Installation manager preview</summary>
+
+![llama.cpp installation manager](docs/images/server-installations.png)
+
+*Demo release and fixture executable from automated UI checks.*
+
+</details>
+
+## Import and export profiles
+
+On **Models**, click **Export…** on a profile or **Export all…** to save a JSON file. Exports contain profile names, descriptions, typed launch options (including reasoning/MTP settings), additional arguments, and **GGUF filenames**. They do not include model weights, profile IDs, server executable paths, application settings, or chat history. Directory paths embedded in descriptions or additional arguments are preserved, so review those when sharing or moving to another computer.
+
+Click **Import…** and select an exported JSON file. The preview lets you select individual profiles, edit names, inspect launch arguments, and use **Locate GGUF…** to choose local weights. A unique filename match in the configured models folder (including subfolders) is selected automatically. Ambiguous matches require a manual choice. If the weights are not available, you can import the settings now and fix the model path in **Edit** before starting.
+
+Imports always create new profile IDs. Name collisions receive ` (imported)`, ` (imported 2)`, etc. Existing profiles, the current selection, running server, and application settings are preserved. The selected batch is validated and saved together; invalid imports do not partially modify the configuration. Imported flags are checked against the selected server's capabilities when starting a model.
+
+The portable format is `LLamaModelLoader.Profiles`, version `1`, with a limit of 100 profiles and 4 MiB per file. Unknown fields, unsupported versions, malformed data, invalid options, and duplicate JSON properties are rejected. This format is separate from `config.json`; configuration files are not accepted as profile bundles.
 
 ## Model settings
 
@@ -74,10 +111,12 @@ Closing the window hides the application in the system tray when the tray is ava
 | Speculative decoding | Method, maximum draft tokens, minimum draft probability |
 | Memory | Flash Attention, K/V cache types, memory loading mode, GPU memory fitting |
 | Generation | Temperature, Top K, Top P, Min P, penalties, seed, maximum new tokens |
-| Chat | Chat template, Jinja, reasoning mode |
+| Chat | Chat template, Jinja, reasoning mode, reasoning budget and budget message |
 | Advanced | Parallel request slots |
 
 An empty field uses the server default. The editor shows an argument preview, and startup checks selected flags against the installed executable's `--help`. llama.cpp validates model compatibility and option values during loading; failures appear in **Server log**.
+
+Under **Chat**, the application defaults to `--reasoning-budget 8192` and `--reasoning-budget-message "Enough thinking. Act now: make the next tool call."`. Existing profiles without these fields receive the same defaults. Budget `-1` is unrestricted; `0` ends thinking immediately. Clear a field to omit that flag and use the server default. Custom values previously entered in Additional arguments are imported into the new fields; conflicting entries remain visible for correction. Save the profile and restart the server to apply changes. These flags require a supporting llama.cpp build.
 
 For additional options, enter one CLI token per line in **Additional arguments**, without surrounding quotes. Application-managed arguments cannot be overridden there.
 
@@ -164,11 +203,33 @@ The application enables `--log-verbosity 4` when supported, unless you explicitl
 - Generation and prompt processing rates, token counters, and active/queued requests from `/metrics`.
 - Request slots and context capacity from `/slots`.
 - CPU and RAM for the managed server process tree.
+- Two-column resource cards: CPU beside GPU load, and Server RAM beside GPU RAM. A single GPU shows used memory prominently with total capacity below; multiple GPUs have separate lines. GPU readings cover the whole device, including other applications.
 - NVIDIA utilization, VRAM, and temperature through `nvidia-smi`. GPU readings cover the entire device, including other applications.
 
 The **Session average** divides total generated tokens by total generation time. Idle time does not lower this value. It persists when the statistics window is reopened and resets with the server session. Counters may update only after a request finishes.
 
 The application enables `--metrics` when supported. Unavailable metrics appear as a dash. See the [llama-server reference](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) for API details.
+
+## Built-in chat
+
+Start a model on **Home**, wait for **Model ready**, then open **Chat** in the sidebar. Type a message and click **Send** or press **Ctrl+Enter**. Enter inserts a new line.
+
+- Responses stream into selectable plain text; use **Copy** to copy a message. Reasoning returned in a separate API field appears in a collapsible **Thinking** panel. If the server leaves thinking tags in the answer, they remain visible as text.
+- **Chat options** provides optional system instructions and a maximum output-token limit (default **16384**, including thinking). Sampling and reasoning settings come from the running server profile.
+- **Stop response** cancels the current request while keeping the server running. Partial canceled/failed exchanges stay visible but are excluded from future request history; the input is restored for retry. A response that reaches its output-token limit is labeled and retained as partial conversation context.
+- **New chat** cancels any current response and clears conversation history and input. Chat options remain set. History survives navigation to other pages but is only kept in memory; application exit clears it.
+- Chat uses the alias of the actual running model, even after a profile is renamed before restart. After a server restart/model change, the previous conversation stays visible; select **New chat** to continue with the new session. Chat is unavailable during performance optimization.
+
+The chat uses the managed server's local `/v1/chat/completions` endpoint. It sends completed user/assistant exchanges plus the current prompt; separate reasoning text is not replayed. Requests time out after ten minutes. Context errors are displayed without silently dropping earlier messages; start a new chat, shorten the prompt, or adjust the model's context. Attachments, tool execution, Markdown rendering, and saved conversation files are outside this first version.
+
+<details>
+<summary>Chat preview</summary>
+
+![Built-in chat with a streamed answer and separate thinking](docs/images/chat.png)
+
+*Fixture model and response from automated UI checks.*
+
+</details>
 
 ## Send a request with workspace context
 
@@ -191,10 +252,11 @@ The script discovers the model ID automatically. Optional parameters include `-M
 | Configuration | `%LOCALAPPDATA%\LLamaModelLoader\config.json` |
 | Configuration backup | `%LOCALAPPDATA%\LLamaModelLoader\config.json.bak` |
 | Server logs | `%LOCALAPPDATA%\LLamaModelLoader\logs\` |
+| Managed llama.cpp builds | `%LOCALAPPDATA%\LLamaModelLoader\servers\` |
 
 Set `LLAMAMODELLOADER_DATA_DIR` to use a different data directory. Configuration writes are atomic; damaged files are preserved during recovery. The application reads configuration schemas 1 and 2 and saves schema 2.
 
-The visible log keeps the last 500 lines. File logs rotate independently. Profile names, descriptions, paths, and external server output retain their original language.
+The visible log keeps the last 500 lines and automatically scrolls to the latest entry when opened or updated. File logs rotate independently. Profile names, descriptions, paths, and external server output retain their original language.
 
 ## Development and tests
 
@@ -215,6 +277,12 @@ dotnet build LLamaModelLoader.slnx -c Release -m:1
 dotnet run --project tests/SmokeChecks -c Release --no-build -- render artifacts/screenshots
 ```
 
+An optional installer smoke check downloads the latest supported official **CPU** build into the specified folder and checks its version/help. It does not load a model or change application Settings:
+
+```powershell
+dotnet run --project tests/SmokeChecks -c Release --no-build -- install artifacts/installer-smoke
+```
+
 An optional real-model smoke check starts a separate server on port `18089`, sends an inference request, restarts it, and stops it:
 
 ```powershell
@@ -230,7 +298,7 @@ dotnet run --project tests/SmokeChecks -c Release --no-build -- real 'D:\llama_c
 
 ## Current scope
 
-This version manages one local server. Model downloads, llama.cpp installation or updates, LAN hosting, multiple simultaneous servers, and an integrated chat are not implemented. GPU telemetry currently supports NVIDIA only. Available launch options and memory details depend on the selected llama.cpp build.
+This version manages one local server. Model downloads, LAN hosting, and multiple simultaneous servers are not implemented. Built-in chat supports text conversations with the running model. Managed llama.cpp downloads support Windows x64 CPU, Vulkan, and CUDA; other backends can be installed manually and selected by path. GPU telemetry currently supports NVIDIA only. Available launch options and memory details depend on the selected llama.cpp build.
 
 For implementation notes and verification results, see the [MVP plan](docs/mvp-plan.md), [llama.cpp option research](docs/llama-server-research.md), and [verification report](docs/verification.md).
 

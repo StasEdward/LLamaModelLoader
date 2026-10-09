@@ -26,6 +26,15 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ModelProfile? SelectedProfile => Profiles.FirstOrDefault(p => p.Id == Configuration.SelectedProfileId);
     public string DataDirectory => _store.DirectoryPath;
     public ServerStatus Status => _server.Status;
+    public ChatTarget? GetChatTarget()
+    {
+        var status = Status;
+        if (_disposing || IsOptimizing || status.State != ServerState.Ready || !status.ApiAvailable ||
+            status.BaseUrl is null || status.ProcessId is null || status.StartedAt is null) return null;
+        var running = _server.RunningConfiguration;
+        var profile = running?.Profiles.FirstOrDefault(p => p.Id == status.ProfileId);
+        return profile is null ? null : new(status.BaseUrl, profile.Name.Trim(), status.ProcessId.Value, status.StartedAt.Value);
+    }
     public bool ShowMemory => Status.State == ServerState.Ready;
     [ObservableProperty] private MemoryBreakdown _memory = MemoryBreakdown.Empty;
     public Task<ProcessResources?> ReadResourcesAsync(ServerStatus expected, CancellationToken token) => _server.ReadResourcesAsync(expected, token);
@@ -124,6 +133,19 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
         if (Status.ProfileId == id && Status.State is ServerState.Starting or ServerState.Ready or ServerState.Stopping)
             throw new InvalidOperationException("Stop the active model first.");
         await ChangeAsync(c => { c.Profiles.RemoveAll(p => p.Id == id); if (c.SelectedProfileId == id) c.SelectedProfileId = null; });
+    }
+    public async Task<int> ImportProfilesAsync(IReadOnlyList<ModelProfile> profiles)
+    {
+        EnsureEditable();
+        var count = 0;
+        await ChangeAsync(configuration =>
+        {
+            EnsureEditable();
+            var imported = ProfileTransfer.PrepareImports(profiles, configuration.Profiles);
+            configuration.Profiles.AddRange(imported); count = imported.Count;
+        });
+        Notice = $"Imported {count} profile(s). Select a profile when you are ready to use it.";
+        return count;
     }
     public Task DuplicateAsync(ModelProfile profile)
     {

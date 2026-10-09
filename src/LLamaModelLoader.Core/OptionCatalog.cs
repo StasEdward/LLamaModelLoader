@@ -81,6 +81,8 @@ public static class OptionCatalog
         new("ChatTemplate", "Chat", "Chat template", "--chat-template", "Leave blank to use the GGUF template. Enter a built-in template name or Jinja template."),
         new("Jinja", "Chat", "Use Jinja", "--jinja", "Leave blank for the server default.", Choices: ["True", "False"], FalseFlag: "--no-jinja"),
         new("Reasoning", "Chat", "Reasoning mode", "--reasoning", "Requires support from the model template.", Choices: ["auto", "on", "off"]),
+        new("ReasoningBudget", "Chat", "Reasoning budget, tokens", "--reasoning-budget", "Application default: 8192. −1 is unrestricted; 0 ends thinking immediately. Leave blank for the server default.", -1),
+        new("ReasoningBudgetMessage", "Chat", "Reasoning budget message", "--reasoning-budget-message", "Message inserted before the end-of-thinking tag when the budget is exhausted. Leave blank for the server default."),
         new("Parallel", "Advanced", "Parallel requests", "--parallel", "−1 means auto; a positive number sets the slot count.", -1)
     ];
 }

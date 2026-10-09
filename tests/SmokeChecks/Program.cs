@@ -9,8 +9,13 @@ using LLamaModelLoader.Core;
 using LLamaModelLoader.Desktop;
 using LLamaModelLoader.Infrastructure;
 
-if (args.Length < 2) throw new ArgumentException("Usage: SmokeChecks render OUTPUT_DIRECTORY | real SERVER_EXE MODEL_GGUF OUTPUT_DIRECTORY");
-if (args[0] == "render")
+if (args.Length < 2) throw new ArgumentException("Usage: SmokeChecks render OUTPUT_DIRECTORY | layout OUTPUT_DIRECTORY | install OUTPUT_DIRECTORY | real SERVER_EXE MODEL_GGUF OUTPUT_DIRECTORY | metadata MODEL_GGUF | observe BASE_URL");
+if (args[0] == "layout")
+{
+    var session = HeadlessUnitTestSession.StartNew(typeof(UiBootstrap));
+    await session.Dispatch(async () => { await ScrollLayoutChecks.RunAsync(Path.GetFullPath(args[1])); return true; }, CancellationToken.None);
+}
+else if (args[0] == "render")
 {
     var directory = Path.GetFullPath(args[1]); Directory.CreateDirectory(directory);
     var session = HeadlessUnitTestSession.StartNew(typeof(UiBootstrap));
@@ -33,6 +38,25 @@ if (args[0] == "render")
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         }
         await Snapshot("home.png");
+        var logPanel = window.GetVisualDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "Server log");
+        await vm.RunAsync(() => throw new InvalidOperationException(string.Join('\n', Enumerable.Range(1, 100).Select(i => $"Log fixture line {i}"))));
+        vm.Tick(); logPanel.IsExpanded = true;
+        await Task.Delay(200); Dispatcher.UIThread.RunJobs();
+        var logBox = window.GetVisualDescendants().OfType<TextBox>().Single(x => x.Name == "ServerLogText");
+        var logScroll = logBox.GetVisualDescendants().OfType<ScrollViewer>().First();
+        void AssertLogAtEnd()
+        {
+            if (logScroll.Extent.Height <= logScroll.Viewport.Height || Math.Abs(logScroll.Offset.Y - (logScroll.Extent.Height - logScroll.Viewport.Height)) > 1)
+                throw new Exception("Server log did not scroll to its last line");
+        }
+        AssertLogAtEnd();
+        logScroll.Offset = default;
+        await vm.RunAsync(() => throw new InvalidOperationException("New log entry")); vm.Tick();
+        await Task.Delay(200); Dispatcher.UIThread.RunJobs(); AssertLogAtEnd();
+        logPanel.IsExpanded = false; logScroll.Offset = default; logPanel.IsExpanded = true;
+        await Task.Delay(200); Dispatcher.UIThread.RunJobs(); AssertLogAtEnd();
+        logPanel.IsExpanded = false; vm.ClearLog(); vm.Notice = "";
+        Console.WriteLine("UI: server log follows the last line on expand, append, and reopen");
         var metadataExpander = window.GetVisualDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "GGUF metadata");
         metadataExpander.IsExpanded = true;
         await Task.Delay(700); Dispatcher.UIThread.RunJobs();
@@ -116,6 +140,7 @@ if (args[0] == "render")
                 throw new Exception("Saved-profile comparison preview did not use the selected profile");
             optimizer.Close();
             Console.WriteLine("UI: optimization preview, run, exclusive controls, results, and save as new profile passed");
+            await ChatSmokeChecks.RunAsync(memoryWindow, memoryVm, directory);
             memoryWindow.Close();
         }
         Console.WriteLine("UI: memory binding, log clear, restart, unavailable state, and stop passed");
@@ -135,6 +160,11 @@ if (args[0] == "render")
             ["llamacpp:tokens_predicted_seconds_total"] = 20 },
             [new(0, true, 131072, 37203, 829)], [new("0", "NVIDIA GeForce RTX 5080", 94, 15069, 16303, 58)]);
         stats.Present(sampleStatistics, new(TimeSpan.FromSeconds(5), 9300000000, 2), 12.5);
+        string? GpuSummary(string name) => stats.GetVisualDescendants().OfType<TextBlock>().Single(x => x.Name == name).Text;
+        var expectedGpuMemory = $"{15069d / 1024:N2} GiB";
+        if (GpuSummary("GpuUtilizationSummary") != "94 %" || GpuSummary("GpuMemorySummary") != expectedGpuMemory ||
+            !stats.GetVisualDescendants().OfType<TextBlock>().Any(x => x.Text == $"of {16303d / 1024:N2} GiB · GPU 0 · whole device"))
+            throw new Exception("GPU summaries were not displayed alongside CPU/RAM");
         string? SessionRate() => stats.GetVisualDescendants().OfType<TextBlock>().Single(x => x.Name == "SessionGenerationRate").Text;
         var expectedRate = "Session average: " + (829d / 20).ToString("N1") + " tokens/s";
         if (SessionRate() != expectedRate) throw new Exception("Session generation rate was not displayed");
@@ -143,8 +173,17 @@ if (args[0] == "render")
         stats.Present(sampleStatistics with { Metrics = idleMetrics, Slots = [new(0, false, 131072, 37203, 0)] }, null, null);
         if (SessionRate() != expectedRate) throw new Exception("Idle polling changed the session generation rate");
         await StatsSnapshot("statistics-idle.png");
+        stats.Present(sampleStatistics with { Gpus = [new("0", "First GPU", 0, 1024, 8192, 40), new("1", "Second GPU", null, null, 16384, null)] }, null, null);
+        if (GpuSummary("GpuUtilizationSummary") != "GPU 0: 0 %\nGPU 1: — %" ||
+            GpuSummary("GpuMemorySummary") != $"GPU 0: {1d:N2} / {8d:N2} GiB\nGPU 1: — / {16d:N2} GiB")
+            throw new Exception("GPU summaries lost individual devices or unavailable values");
+        stats.Width = 780;
+        await StatsSnapshot("statistics-multiple-gpus.png");
+        stats.Width = 1040;
         stats.Present(new(new Dictionary<string, double>(), [], []), null, null);
         if (SessionRate() != "Session average: — tokens/s") throw new Exception("Missing session counters retained a stale rate");
+        if (GpuSummary("GpuUtilizationSummary") != "— %" || GpuSummary("GpuMemorySummary") != "— GiB")
+            throw new Exception("Missing GPU data retained stale summaries");
         stats.Close();
         // The actual navigation opens one reusable, independently closable window.
         window.ShowStatistics(); window.ShowStatistics();
@@ -168,14 +207,26 @@ if (args[0] == "render")
         Option("SpecDraftPMin").Text = "0.60";
         spec.BringIntoView();
         await Snapshot("speculative-editor.png");
+        var chat = window.GetVisualDescendants().OfType<Expander>().Single(x => x.Header?.ToString() == "Chat");
+        foreach (var expander in window.GetVisualDescendants().OfType<Expander>()) expander.IsExpanded = expander == chat;
+        await Task.Delay(100); Dispatcher.UIThread.RunJobs();
+        if (Option("ReasoningBudget").Text != "8192" || Option("ReasoningBudgetMessage").Text != "Enough thinking. Act now: make the next tool call.")
+            throw new Exception("Reasoning defaults were not displayed");
+        Option("ReasoningBudget").Text = "4096";
+        Option("ReasoningBudgetMessage").Text = "Enough thinking. Act now: make the next tool call.";
+        chat.BringIntoView(); await Snapshot("reasoning-editor.png");
         Click("Save profile");
         await Task.Delay(300);
         if (vm.SelectedProfile?.Options.ContextSize != 2048) throw new Exception("Editor save failed: " + vm.Notice);
         var savedSpec = new ConfigurationStore(data).Load().Value.Profiles.Single(x => x.Id == profile.Id).Options;
         if (savedSpec.SpecType != "draft-mtp" || savedSpec.SpecDraftNMax != 2 || savedSpec.SpecDraftPMin != 0.6) throw new Exception("Speculative editor save failed");
+        if (savedSpec.ReasoningBudget != 4096 || savedSpec.ReasoningBudgetMessage != "Enough thinking. Act now: make the next tool call.")
+            throw new Exception("Reasoning editor save failed");
         Console.WriteLine("UI: edited context saved");
         Click("⚙  Settings"); await Snapshot("settings.png");
         if (!window.GetVisualDescendants().OfType<TextBlock>().Any(x => x.Text == "Settings")) throw new Exception("Settings navigation failed");
+        await InstallationSmokeChecks.RunAsync(window, directory, fixture);
+        await ProfileTransferSmokeChecks.RunAsync(window, vm, directory);
         window.Close();
         return true;
     }, CancellationToken.None);
@@ -183,6 +234,20 @@ if (args[0] == "render")
     // This is a dedicated screenshot process. All application resources were disposed in Dispatch;
     // terminate the headless rendering host, which can keep its dispatcher alive on Windows.
     Environment.Exit(0);
+}
+else if (args[0] == "install")
+{
+    // Explicit opt-in: downloads and probes an official CPU build, without loading a model or editing Settings.
+    var directory = Path.GetFullPath(args[1]);
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+    using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+    var builds = await new ServerReleaseClient(http).GetBuildsAsync(timeout.Token);
+    var build = builds.First(b => b.Backend == "cpu");
+    var installer = new ServerInstaller(directory, http);
+    var installed = await installer.InstallAsync(build, new Progress<InstallationProgress>(p => Console.WriteLine(p.Message)), timeout.Token);
+    Console.WriteLine(installed.Version);
+    Console.WriteLine("Verified official CPU installation: " + installed.ExecutablePath);
+    if (!installer.GetInstalled().Any(i => i.ExecutablePath == installed.ExecutablePath)) throw new Exception("Installation was not persisted");
 }
 else if (args[0] == "real")
 {

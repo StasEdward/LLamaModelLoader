@@ -50,6 +50,9 @@ public sealed class ProcessTests : IAsyncLifetime
         using var data = JsonDocument.Parse(await File.ReadAllTextAsync(captured));
         Assert.Contains(_profile.ModelPath, data.RootElement.GetProperty("args").EnumerateArray().Select(x => x.GetString()));
         Assert.Single(data.RootElement.GetProperty("args").EnumerateArray(), x => x.GetString() == "--metrics");
+        var capturedArguments = data.RootElement.GetProperty("args").EnumerateArray().Select(x => x.GetString()).ToList();
+        Assert.Equal("8192", capturedArguments[capturedArguments.IndexOf("--reasoning-budget") + 1]);
+        Assert.Equal("Enough thinking. Act now: make the next tool call.", capturedArguments[capturedArguments.IndexOf("--reasoning-budget-message") + 1]);
         using var http = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(3) };
         async Task<string?> ApiModelName()
         {

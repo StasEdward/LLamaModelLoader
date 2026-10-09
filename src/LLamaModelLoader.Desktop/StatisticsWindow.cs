@@ -17,6 +17,9 @@ public sealed class StatisticsWindow : Window
     private readonly TextBlock _session = Label(""), _updated = Label("Waiting for data…"), _errors = Label("");
     private readonly TextBlock _generation = Value(), _prompt = Value(), _requests = Value(), _tokens = Value(), _cpu = Value(), _ram = Value();
     private readonly TextBlock _generationSession = new() { Name = "SessionGenerationRate", Text = "Session average: — tokens/s", FontSize = 15, TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#8BE3C1") };
+    private readonly TextBlock _gpuUsage = Summary("GpuUtilizationSummary", "— %"),
+        _gpuRam = Summary("GpuMemorySummary", "— GiB");
+    private readonly TextBlock _gpuUsageHint = Label("Whole device"), _gpuRamHint = Label("Used / total · whole device");
     private readonly StackPanel _gpus = new() { Spacing = 10 }, _slots = new() { Spacing = 8 };
     private readonly Button _pause = new() { Content = "Pause" };
     private readonly DispatcherTimer _stateTimer;
@@ -33,14 +36,17 @@ public sealed class StatisticsWindow : Window
         var header = new Grid { ColumnDefinitions = new("*,Auto") };
         header.Children.Add(new StackPanel { Spacing = 8, Children = { new TextBlock { Text = "Server statistics", Classes = { "title" } }, _session } });
         Grid.SetColumn(_pause, 1); header.Children.Add(_pause);
-        var cards = new Grid { ColumnDefinitions = new("*,*,*"), RowDefinitions = new("Auto,Auto") };
+        var cards = new Grid { ColumnDefinitions = new("*,*,*,*"), RowDefinitions = new("Auto,Auto") };
         ToolTip.SetTip(_generationSession, "Total generated tokens / total generation time since server start. Idle and prompt processing time are excluded. Counters may update after a request completes.");
         Control[] items = [Card("GENERATION", _generation, "Server rate · tokens/s", _generationSession), Card("PROMPT PROCESSING", _prompt, "Average speed · tokens/s"),
-            Card("REQUESTS", _requests, "Processing / queued"), Card("SESSION TOKENS", _tokens, "Input / generated"),
-            Card("SERVER CPU", _cpu, "Share of total CPU capacity"), Card("SERVER RAM", _ram, "Process tree working set")];
-        for (var i = 0; i < items.Length; i++) { Grid.SetColumn(items[i], i % 3); Grid.SetRow(items[i], i / 3); cards.Children.Add(items[i]); }
+            Card("REQUESTS", _requests, "Processing / queued"), Card("SESSION TOKENS", _tokens, "Input / generated")];
+        for (var i = 0; i < items.Length; i++) { Grid.SetColumn(items[i], i); cards.Children.Add(items[i]); }
+        var load = ResourceCard("CPU LOAD", _cpu, Label("Server · share of total CPU"), "GPU LOAD", _gpuUsage, _gpuUsageHint);
+        var memory = ResourceCard("SERVER RAM", _ram, Label("Process tree working set"), "GPU RAM", _gpuRam, _gpuRamHint);
+        Grid.SetRow(load, 1); Grid.SetColumnSpan(load, 2); cards.Children.Add(load);
+        Grid.SetRow(memory, 1); Grid.SetColumn(memory, 2); Grid.SetColumnSpan(memory, 2); cards.Children.Add(memory);
         _errors.Foreground = Brush.Parse("#E4C58C");
-        Content = new ScrollViewer { Content = new StackPanel { Margin = new Thickness(28), Spacing = 18, Children = {
+        Content = new ScrollViewer { AllowAutoHide = false, Content = new StackPanel { Margin = new Thickness(28), Spacing = 18, Children = {
             header, _updated, cards, _errors,
             new TextBlock { Text = "NVIDIA GPU", FontSize = 19, FontWeight = FontWeight.SemiBold },
             Label("Whole-device readings, including other applications. Memory is shown in MiB."), _gpus,
@@ -58,6 +64,20 @@ public sealed class StatisticsWindow : Window
 
     private static TextBlock Label(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, Classes = { "muted" } };
     private static TextBlock Value() => new() { Text = "—", FontSize = 26, FontWeight = FontWeight.SemiBold, Foreground = Brush.Parse("#8BE3C1"), TextWrapping = TextWrapping.Wrap };
+    private static TextBlock Summary(string name, string text) { var value = Value(); value.Name = name; value.Text = text; return value; }
+    private static Border ResourceCard(string leftTitle, TextBlock leftValue, TextBlock leftHint, string rightTitle, TextBlock rightValue, TextBlock rightHint)
+    {
+        var grid = new Grid { ColumnDefinitions = new("*,25,*"), RowDefinitions = new("Auto,Auto,Auto"), RowSpacing = 10 };
+        grid.Children.Add(Label(leftTitle));
+        var rightLabel = Label(rightTitle); Grid.SetColumn(rightLabel, 2); grid.Children.Add(rightLabel);
+        Grid.SetRow(leftValue, 1); grid.Children.Add(leftValue);
+        Grid.SetRow(rightValue, 1); Grid.SetColumn(rightValue, 2); grid.Children.Add(rightValue);
+        Grid.SetRow(leftHint, 2); grid.Children.Add(leftHint);
+        Grid.SetRow(rightHint, 2); Grid.SetColumn(rightHint, 2); grid.Children.Add(rightHint);
+        var divider = new Border { Width = 1, Background = Brush.Parse("#283245"), HorizontalAlignment = HorizontalAlignment.Center };
+        Grid.SetColumn(divider, 1); Grid.SetRowSpan(divider, 3); grid.Children.Add(divider);
+        return new() { Classes = { "card" }, Margin = new Thickness(0, 0, 10, 10), Child = grid };
+    }
     private static Border Card(string title, TextBlock value, string hint, Control? extra = null)
     {
         var content = new StackPanel { Spacing = 10, Children = { Label(title), value, Label(hint) } };
@@ -78,6 +98,8 @@ public sealed class StatisticsWindow : Window
             _observed = status; _previousCpu = null;
             foreach (var value in new[] { _generation, _prompt, _requests, _tokens, _cpu, _ram }) value.Text = "—";
             _generationSession.Text = "Session average: — tokens/s";
+            PresentGpuSummaries([]);
+            _gpus.Children.Clear();
             _slots.Children.Clear(); _errors.Text = "";
             _updated.Text = _paused ? "Paused · session changed" : "Waiting for a new snapshot…";
         }
@@ -132,6 +154,7 @@ public sealed class StatisticsWindow : Window
         _tokens.Text = N(snapshot.Metric("prompt_tokens_total")) + " / " + N(snapshot.Metric("tokens_predicted_total"));
         _cpu.Text = N(cpu, "N1") + " %";
         _ram.Text = resources is null ? "—" : N(resources.WorkingSetBytes / 1073741824d, "N2") + " GiB";
+        PresentGpuSummaries(snapshot.Gpus);
         _errors.Text = string.Join("\n", new[] { snapshot.MetricsError, snapshot.SlotsError, snapshot.GpuError }.Where(x => x is not null).Distinct());
         _errors.IsVisible = _errors.Text.Length > 0;
         _gpus.Children.Clear();
@@ -156,5 +179,23 @@ public sealed class StatisticsWindow : Window
         _slots.Children.Add(table);
         if (snapshot.Slots.Count == 0) _slots.Children.Add(Label("No slot data"));
         _updated.Text = "Updated " + DateTime.Now.ToString("HH:mm:ss") + " · " + (resources is null ? "Process resources are unavailable" : $"Server processes: {resources.ProcessCount}");
+    }
+
+    private void PresentGpuSummaries(IReadOnlyList<GpuStatistics> gpus)
+    {
+        _gpuUsage.FontSize = _gpuRam.FontSize = gpus.Count > 1 ? 18 : 26;
+        _gpuUsageHint.Text = "Whole device";
+        _gpuRamHint.Text = "Used / total · whole device";
+        if (gpus.Count == 1)
+        {
+            var gpu = gpus[0];
+            _gpuUsage.Text = N(gpu.Utilization) + " %";
+            _gpuRam.Text = N(gpu.UsedMiB / 1024d, "N2") + " GiB";
+            _gpuUsageHint.Text = $"GPU {gpu.Index} · whole device";
+            _gpuRamHint.Text = $"of {N(gpu.TotalMiB / 1024d, "N2")} GiB · GPU {gpu.Index} · whole device";
+            return;
+        }
+        _gpuUsage.Text = gpus.Count == 0 ? "— %" : string.Join("\n", gpus.Select(gpu => $"GPU {gpu.Index}: {N(gpu.Utilization)} %"));
+        _gpuRam.Text = gpus.Count == 0 ? "— GiB" : string.Join("\n", gpus.Select(gpu => $"GPU {gpu.Index}: {N(gpu.UsedMiB / 1024d, "N2")} / {N(gpu.TotalMiB / 1024d, "N2")} GiB"));
     }
 }

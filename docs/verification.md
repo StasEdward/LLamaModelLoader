@@ -40,6 +40,18 @@ Application-owned labels, hints, dialogs, tray items, validation messages, statu
 
 The Release build and standalone publish completed without warnings; all 35 tests passed. The headless UI check passed with English navigation and button labels, including profile selection and saving speculative settings. Home, Models, Settings, the speculative editor, and populated/unavailable statistics screenshots in `artifacts/screenshots-english` were visually inspected. A source/documentation scan found no remaining Cyrillic text. Historical artifacts and external process output were not rewritten.
 
+## Built-in chat — October 10, 2026
+
+Release build and standalone Windows publish completed without warnings or errors. All 11 chat client tests pass, covering local endpoint restrictions, model alias and multi-turn request serialization, SSE content/reasoning/usage events, multiline data, output-limit completion, HTTP and stream errors, malformed data, unexpected tool calls, incomplete streams, request size limits, and cancellation/disposal of a stalled response. The existing 107 tests also passed in the regression run; one initial new-test assertion was corrected to accept the JSON parser's derived exception type, then the chat suite was rerun successfully.
+
+Headless UI checks use a real local fixture process to verify sending is disabled without a ready model, separate thinking display, streamed text, history across navigation, the running alias after a saved profile rename, request cancellation without stopping the server, exclusion of canceled exchanges from later history, restart/session boundaries, and New chat during generation. All UI checks passed. Stopped/populated screenshots in `artifacts/screenshots-chat` were visually inspected; the chat preview is included under `docs/images`. No real-model inference request was sent and no user configuration was changed during these checks.
+
+## GPU summaries beside CPU and RAM — October 10, 2026
+
+The statistics overview now shows per-device GPU utilization in the CPU card and used/total GPU memory in GiB in the Server RAM card. GPU readings are explicitly labeled as whole-device readings. The existing detailed GPU section remains available. Summaries clear on session changes and when telemetry disappears.
+
+Release build and self-contained publish completed without warnings or errors. Headless checks passed for one GPU, multiple GPUs, zero utilization, partially unavailable telemetry, and removal of stale values. Screenshots at the normal and minimum window widths in `artifacts/screenshots-gpu-summary` were visually inspected; the README statistics preview was refreshed. These checks use fixture telemetry and do not send inference requests to the user's server.
+
 ## Session generation average
 
 Release build completed without warnings; 41 tests passed. Tests cover cumulative token/time weighting, idle polls with a zero server rate, empty/new session counters, and invalid/nonfinite counters. The headless UI verifies the session-average label during generation, while idle, and when counters become unavailable. The idle screenshot in `artifacts/screenshots-session-average/statistics-idle.png` was visually checked.
@@ -54,6 +66,16 @@ The headless UI ran against a local fixture process and checked actual controlle
 
 The installed executable's help confirms `--log-verbosity` and trace level 4. Its existing verbosity-3 startup log omits native allocation details. The real server was not restarted, and the user's saved configuration was not changed. Validation against a complete real memory-allocation log awaits the next model launch. The parser reports recognized buffer allocations only; it does not claim to measure total device VRAM or resident host memory.
 
+## llama.cpp installation management — October 10, 2026
+
+The final Release build and self-contained Windows publish completed without warnings or errors; all **97 .NET tests passed**. Installer checks cover official-release filtering (including source-only and rolling releases), exact CUDA runtime pairing, SHA-256 and size verification, untrusted URL rejection, ZIP traversal, reserved Windows paths, duplicate entries, symlink/reparse entries, canceled downloads, cancellation after probing, failed probes, and preservation of previous installations. Installations are only promoted after validation. Fixture HTTP requests do not access GitHub.
+
+Headless UI checks exercise release discovery, download and extraction, a real version/help probe of the fixture executable, persisted installation selection, returning a path without saving Settings, and cancellation while closing the window. Existing model-control, memory, statistics, metadata, and optimizer UI checks remain included. Final screenshots in `artifacts/screenshots-installations-final` were visually inspected; the manager preview is committed under `docs/images`.
+
+An opt-in network smoke check downloaded and installed the official Windows x64 CPU build **b11538** in `artifacts/installer-check/managed`. Its reported version was `0.6.0-dev (build 11538, commit 79e2e74eb)`, compiled with Clang 20.1.8. The downloaded archive passed the upstream SHA-256 check; version/help probing and manifest discovery succeeded. No model was loaded, and the user's active server and saved Settings were not changed. Actual CUDA/Vulkan downloads and GPU inference were not exercised; CUDA archive pairing and colocated extraction use fixtures, with the flat runtime layout checked against the upstream release workflow.
+
+The manager uses the official [GitHub release API](https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30) and [Windows CUDA packaging workflow](https://github.com/ggml-org/llama.cpp/blob/79e2e74eb/.github/workflows/release.yml). The `/releases/latest` endpoint alone is unsuitable here because v0.6.0 has no binary assets, while b11538 is labeled as a prerelease.
+
 ## GGUF metadata and performance optimization — October 10, 2026
 
 The Release build completed with no warnings or errors; all 73 .NET tests passed. Added checks cover little-endian GGUF v2/v3 and big-endian v3, skipped vocabulary arrays, tensor type/element counts without payloads, split files, cancellation, malformed/truncated/oversized headers, and arithmetic overflow.
@@ -67,6 +89,24 @@ Headless UI checks exercise metadata display, candidate preview, benchmark execu
 Real-model optimization, performance improvements, answer quality, MTP/backend compatibility, and behavior under sustained third-party GPU load have not been benchmarked by this change. The search changes one group at a time and does not combine winners automatically. Memory reserve is a sampled eligibility criterion, not a hard allocation cap; short-lived peaks may be missed. Long-context performance must be measured with a representative prompt. Benchmarking temporarily interrupts the owned server and loses its conversation caches even when its launch settings are restored.
 
 The standalone build is published to `artifacts/app-optimization`, with the complete distribution in `artifacts/LLamaModelLoader-optimization-win-x64.zip`. User configuration remains schema 2. Reports are separate JSON files under the data directory's `benchmarks` folder.
+
+## Profile import and export — October 10, 2026
+
+Release build and standalone publish completed without warnings or errors; all 131 .NET tests passed. Transfer tests cover complete option round-trips, filename-only model references, independent profile copies, unique IDs and names, duplicate JSON properties, unknown fields, malformed/oversized files, invalid options, and preservation of an existing export after cancellation or validation failure.
+
+Headless UI checks verify the import preview, local filename resolution, ambiguous matches, renamed duplicates, persistence, cancel, missing model files, and all-or-nothing batch validation. The selected profile is preserved. The import preview in `artifacts/screenshots-profile-transfer-final` was visually inspected. Checks use fixture weights and isolated configuration; native OS file pickers and transfer to a second computer were not exercised.
+
+## Resource columns and Server log scrolling — October 10, 2026
+
+CPU/GPU load and Server RAM/GPU RAM now use two columns per resource card, with aligned values and a vertical separator. The single-GPU memory summary shows used GiB as the main value and total capacity below. Headless checks passed for available, unavailable, and multiple-device readings. Normal and minimum-width screenshots in `artifacts/screenshots-resource-columns` were visually inspected; the README preview was updated.
+
+Server log scrolls to the bottom after expansion and text updates, using the inner scroll viewport after layout without moving focus. Headless checks verify a 100-line log on first expansion, a subsequent entry after scrolling to the top, and collapse/reopen. Release build and standalone publish completed without warnings or errors.
+
+## Page scrollbar spacing — October 10, 2026
+
+The `SmokeChecks layout` reproduction measured a 16-pixel overlap between page content and the vertical scrollbar on Home, Models, and Settings. Their viewers used Fluent's overlay scrollbar mode without a content inset. The shared page scroll helper now reserves scrollbar space and leaves a 12-pixel content gap; the profile editor uses the same helper. Statistics also reserves scrollbar space while retaining its 28-pixel content margin.
+
+Run `dotnet run --project tests/SmokeChecks -c Release --no-build -- layout artifacts/screenshots-scroll-fixed` to measure actual content and scrollbar bounds and capture pages at normal and minimum widths. Home and Models screenshots were visually inspected. Release build and standalone publish completed without warnings or errors. All checks use isolated fixture profiles and do not modify user configuration.
 
 ## Verification limits
 

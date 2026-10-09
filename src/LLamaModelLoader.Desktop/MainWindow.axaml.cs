@@ -21,13 +21,14 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _scan;
     private bool _dirty;
     private StatisticsWindow? _statisticsWindow;
+    private ChatView? _chat;
     public MainWindow() : this(new MainViewModel(Program.DataDirectory)) { }
     public MainWindow(MainViewModel vm)
     {
         InitializeComponent(); _vm = vm; DataContext = vm;
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(600), DispatcherPriority.Background, (_, _) => vm.Tick());
         _timer.Start();
-        Closed += (_, _) => { _timer.Stop(); _scan?.Cancel(); _statisticsWindow?.Close(); };
+        Closed += async (_, _) => { _timer.Stop(); _scan?.Cancel(); _statisticsWindow?.Close(); if (_chat is not null) await _chat.DisposeAsync(); };
         Home();
     }
 
@@ -44,6 +45,11 @@ public partial class MainWindow : Window
     private static StackPanel Row(params Control[] controls)
     { var stack = Stack(controls); stack.Orientation = Orientation.Horizontal; stack.Spacing = 10; return stack; }
     private static Border Card(Control content) => new() { Classes = { "card" }, Child = content };
+    private static ScrollViewer PageScroll(Control content)
+    {
+        content.Margin = new Thickness(0, 0, 12, 0);
+        return new ScrollViewer { AllowAutoHide = false, Content = content };
+    }
     private static Button Button(string label, Func<Task> action, bool primary = false)
     {
         var button = new Button { Content = label };
@@ -62,6 +68,8 @@ public partial class MainWindow : Window
     }
     private async void HomeClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Home);
     private async void ModelsClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Models);
+    private async void ChatClick(object? sender, RoutedEventArgs e) => await NavigateAsync(() => SetPage(_chat ??= new ChatView(_vm)));
+    public Task CancelChatAsync() => _chat?.CancelAndWaitAsync() ?? Task.CompletedTask;
     private async void SettingsClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Settings);
     private void StatisticsClick(object? sender, RoutedEventArgs e) => ShowStatistics();
     public void ShowStatistics()
@@ -104,21 +112,36 @@ public partial class MainWindow : Window
         var optimize = Button("Optimize…", async () => { if (_vm.SelectedProfile is { } profile) await OptimizeAsync(profile); });
         var metadata = new GgufMetadataView();
         metadata.Bind(GgufMetadataView.ModelPathProperty, new Binding(nameof(MainViewModel.SelectedModelPath)));
-        var log = new TextBox { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 11, MinHeight = 160, MaxHeight = 280 };
+        var log = new TextBox { Name = "ServerLogText", IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 11, MinHeight = 160, MaxHeight = 280 };
         log.Bind(TextBox.TextProperty, new Binding(nameof(MainViewModel.LogText)));
         var logs = new Expander { Header = "Server log", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Stack(log,
             Row(Button("Copy", () => _vm.RunAsync(async () => { if (Clipboard is { } clipboard) await clipboard.SetTextAsync(_vm.LogText); })),
                 Button("Clear", () => { _vm.ClearLog(); return Task.CompletedTask; }),
                 Button("Log folder", () => _vm.RunAsync(() => { var folder = Path.Combine(_vm.DataDirectory, "logs"); Directory.CreateDirectory(folder); Open(folder); return Task.CompletedTask; })))) };
+        var logScrollPending = false;
+        void FollowLog()
+        {
+            if (logScrollPending) return;
+            logScrollPending = true;
+            Dispatcher.UIThread.Post(() =>
+            {
+                logScrollPending = false;
+                if (!logs.IsExpanded || TopLevel.GetTopLevel(log) is null) return;
+                var scroll = log.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+                if (scroll is not null) scroll.Offset = new Vector(scroll.Offset.X, scroll.Extent.Height);
+            }, DispatcherPriority.Loaded);
+        }
+        log.TextChanged += (_, _) => FollowLog();
+        logs.Expanded += (_, _) => FollowLog();
         var memory = new MemorySummaryView();
         memory.Bind(MemorySummaryView.SnapshotProperty, new Binding(nameof(MainViewModel.Memory)));
         var memoryCard = Card(memory);
         memoryCard.Bind(IsVisibleProperty, new Binding(nameof(MainViewModel.ShowMemory)));
-        SetPage(new ScrollViewer { Content = Stack(Text("Model control", "title"), Text("Your local server. One profile per session.", "muted"), chooser,
+        SetPage(PageScroll(Stack(Text("Model control", "title"), Text("Your local server. One profile per session.", "muted"), chooser,
             Card(Stack(BoundText(nameof(MainViewModel.ModelTitle), "title"), BoundText(nameof(MainViewModel.ModelDescription), "muted"), BoundText(nameof(MainViewModel.ModelInfo), "muted"),
                 progress, Row(start, stop, restart), changed, Row(edit, optimize))),
             new Expander { Header = "GGUF metadata", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Card(metadata) }, memoryCard,
-            Card(Stack(Text("OpenAI-compatible API", "muted"), BoundText(nameof(MainViewModel.ApiAddress)), Row(copy, web))), logs) });
+            Card(Stack(Text("OpenAI-compatible API", "muted"), BoundText(nameof(MainViewModel.ApiAddress)), Row(copy, web))), logs)));
     }
 
     private void Models()
@@ -143,13 +166,40 @@ public partial class MainWindow : Window
                 profiles.Children.Add(Card(Stack(Text(profile.Name + (active ? "  • running" : selected ? "  • selected" : "")),
                     Text(profile.ModelPath, "muted"), Text(ModelCatalog.Inspect(profile.ModelPath).Summary, "muted"),
                     Row(choose, Button("Edit", () => { Editor(profile); return Task.CompletedTask; }),
-                        Button("Duplicate", () => _vm.RunAsync(async () => { await _vm.DuplicateAsync(profile); Populate(); })), delete))));
+                        Button("Duplicate", () => _vm.RunAsync(async () => { await _vm.DuplicateAsync(profile); Populate(); })), delete,
+                        Button("Export…", () => _vm.RunAsync(() => ExportProfilesAsync([profile])))))));
             }
             if (profiles.Children.Count == 0) profiles.Children.Add(Card(Text("No profiles yet. Add a model from the catalog or select a GGUF file.", "muted")));
         }
         search.TextChanged += (_, _) => Populate(); Populate();
-        SetPage(new ScrollViewer { Content = Stack(Text("Models", "title"), Text("Launch profiles. Multiple profiles can use the same file.", "muted"),
-            Row(Button("＋ Add model", () => { Editor(new()); return Task.CompletedTask; }, true)), search, profiles) });
+        var import = Button("Import…", () => _vm.RunAsync(async () =>
+        {
+            var path = await PickFileAsync("Import model profiles", ["*.json"]);
+            if (path is null) return;
+            var imported = await ProfileTransfer.ReadAsync(path);
+            await new ProfileImportWindow(_vm, imported).ShowDialog<int>(this);
+            Populate();
+        }));
+        import.IsEnabled = !_vm.IsReadOnly && !_vm.IsOptimizing;
+        var exportAll = Button("Export all…", () => _vm.RunAsync(() => ExportProfilesAsync(_vm.Profiles.ToArray())));
+        SetPage(PageScroll(Stack(Text("Models", "title"), Text("Launch profiles. Multiple profiles can use the same file.", "muted"),
+            Row(Button("＋ Add model", () => { Editor(new()); return Task.CompletedTask; }, true), import, exportAll), search, profiles)));
+    }
+
+    private async Task ExportProfilesAsync(IReadOnlyList<ModelProfile> profiles)
+    {
+        // Validate before opening the save picker, so invalid exports cannot replace an existing file.
+        _ = ProfileTransfer.Serialize(profiles);
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = "Export model profiles",
+            SuggestedFileName = profiles.Count == 1 ? "llama-profile.json" : "llama-profiles.json", DefaultExtension = "json",
+            FileTypeChoices = [new FilePickerFileType("Profile JSON") { Patterns = ["*.json"] }], ShowOverwritePrompt = true });
+        if (file is null) return;
+        var path = file.TryGetLocalPath() ?? throw new IOException("Choose a local file for export.");
+        var config = Path.GetFullPath(Path.Combine(_vm.DataDirectory, "config.json"));
+        if (Path.GetFullPath(path).Equals(config, StringComparison.OrdinalIgnoreCase) || Path.GetFullPath(path).Equals(config + ".bak", StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Choose a different filename; the application configuration and its backup cannot be replaced by an export.");
+        await ProfileTransfer.WriteAsync(path, profiles);
+        _vm.Notice = $"Exported {profiles.Count} profile(s) to {path}. Model weights are not included.";
     }
 
     private void Editor(ModelProfile source)
@@ -157,6 +207,7 @@ public partial class MainWindow : Window
         var editingReady = false;
         var profile = new Configuration { Profiles = [source] }.Clone().Profiles[0];
         SpeculativeOptions.ImportExtraArguments(profile);
+        ReasoningOptions.ImportExtraArguments(profile);
         var name = Input(profile.Name); var description = Input(profile.Description); var path = Input(profile.ModelPath, "Absolute GGUF path");
         var preview = new TextBox { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90, MaxHeight = 180, FontSize = 11 };
         var validation = Text("", "muted");
@@ -223,7 +274,7 @@ public partial class MainWindow : Window
         var buttons = Row(Button("Save profile", () => _vm.RunAsync(async () => { await _vm.SaveProfileAsync(Read()); _dirty = false; Models(); }), true),
             Button("Optimize…", async () => { try { await OptimizeAsync(Read()); } catch (Exception ex) { _vm.Notice = ex.Message; } }), Button("Cancel", () => NavigateAsync(Models)));
         buttons.Margin = new Thickness(0, 16, 0, 0); DockPanel.SetDock(buttons, Dock.Bottom); root.Children.Add(buttons);
-        root.Children.Add(new ScrollViewer { Content = sections }); SetPage(root); Changed(); _dirty = false;
+        root.Children.Add(PageScroll(sections)); SetPage(root); Changed(); _dirty = false;
         Dispatcher.UIThread.Post(() => editingReady = true, DispatcherPriority.Background);
     }
 
@@ -240,7 +291,17 @@ public partial class MainWindow : Window
         var version = Text("", "muted");
         var page = Stack(Text("Settings", "title"), Text("General application and local server settings.", "muted"),
             Card(Stack(Field("llama-server.exe", exe), Row(Button("Browse executable…", () => _vm.RunAsync(async () => { var path = await PickFileAsync("Select llama-server.exe", ["*.exe"]); if (path is not null) exe.Text = path; })),
-                Button("Check server", () => _vm.RunAsync(async () => { version.Text = "Checking…"; var capabilities = await _vm.ProbeAsync(exe.Text ?? ""); version.Text = capabilities.Version + $"\nRecognized options: {capabilities.Flags.Count}"; }))), version,
+                Button("Check server", () => _vm.RunAsync(async () => { version.Text = "Checking…"; var capabilities = await _vm.ProbeAsync(exe.Text ?? ""); version.Text = capabilities.Version + $"\nRecognized options: {capabilities.Flags.Count}"; })),
+                Button("Install / update llama.cpp…", async () =>
+                {
+                    _installations = new ServerInstallationsWindow(_vm.DataDirectory, exe.Text ?? "");
+                    try
+                    {
+                        var path = await _installations.ShowDialog<string?>(this);
+                        if (path is not null) { exe.Text = path; version.Text = "Build selected. Save settings to use it on the next start or restart."; }
+                    }
+                    finally { _installations = null; }
+                })), version,
                 Field("Models folder", models), Button("Browse folder…", () => _vm.RunAsync(async () =>
                 {
                     var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Models folder", AllowMultiple = false });
@@ -256,9 +317,12 @@ public partial class MainWindow : Window
             Text("Closing the window keeps the application in the system tray. Exit stops the server. Stop interrupts active requests.", "muted"));
         foreach (var box in new[] { exe, models, port, timeout }) box.TextChanged += (_, _) => { if (editingReady && box.IsAttachedToVisualTree()) _dirty = true; };
         foreach (var check in new[] { windows, auto, minimized }) check.IsCheckedChanged += (_, _) => { if (editingReady && check.IsAttachedToVisualTree()) _dirty = true; };
-        SetPage(new ScrollViewer { Content = page }); _dirty = false;
+        SetPage(PageScroll(page)); _dirty = false;
         Dispatcher.UIThread.Post(() => editingReady = true, DispatcherPriority.Background);
     }
+
+    private ServerInstallationsWindow? _installations;
+    public Task CancelInstallationAsync() => _installations?.CancelAndWaitAsync() ?? Task.CompletedTask;
 
     private async Task<string?> PickFileAsync(string title, string[] patterns)
     {

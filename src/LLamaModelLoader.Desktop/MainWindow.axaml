@@ -15,6 +15,7 @@
         <StackPanel>
           <Button Content="◉  Home" Click="HomeClick" Classes="nav" />
           <Button Content="▤  Models" Click="ModelsClick" Classes="nav" />
+          <Button Content="◌  Chat" Click="ChatClick" Classes="nav" />
           <Button Content="▥  Statistics" Click="StatisticsClick" Classes="nav" />
           <Button Content="⚙  Settings" Click="SettingsClick" Classes="nav" />
         </StackPanel>
