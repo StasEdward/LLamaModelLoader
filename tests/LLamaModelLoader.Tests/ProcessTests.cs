@@ -167,5 +167,82 @@ public sealed class ProcessTests : IAsyncLifetime
     }
     private static bool Exited(int pid)
     { try { using var process = Process.GetProcessById(pid); return process.HasExited; } catch (ArgumentException) { return true; } }
+    [Fact]
+    public async Task OptimizationMeasuresCandidatesAndRestoresActualRunningSettings()
+    {
+        _profile.Options.ContextSize = 4096;
+        _profile.ExtraArguments = ["--test-fail-batch"];
+        await _controller.StartAsync(_settings, _profile); await WaitFor(ServerState.Ready);
+        var originalFingerprint = _controller.Status.ConfigurationFingerprint;
+        _profile.Options.ContextSize = 8192; // A saved edit must not replace the runtime snapshot on restore.
+        var options = new OptimizationOptions { ContextSize = 8192, Repetitions = 2, TuneGpuLayers = false, GpuReserveMiB = 100 };
+        var probe = new ServerProbe(); var caps = await probe.InspectAsync(_settings.ServerPath);
+        var plan = OptimizationPlan.Create(_profile, options, caps.Flags);
+        var report = await new OptimizationRunner(_controller, probe, GoodGpu).RunAsync(_settings, plan, options, null, CancellationToken.None);
+        Assert.False(report.Canceled); Assert.Null(report.RestorationError); Assert.Equal(3, report.Results.Count);
+        Assert.Equal(2, report.Results.Count(r => r.Eligible)); Assert.Contains(report.Results, r => r.Error is not null);
+        var best = OptimizationPlan.Best(report.Results, OptimizationGoal.Generation)!;
+        Assert.Equal(512, best.Candidate.Profile.Options.BatchSize); Assert.Equal(80, best.GenerationSpeed);
+        Assert.Equal(2, best.Samples.Count); Assert.Equal(1024, best.PeakGpuMiB); Assert.Equal(7168, best.MinimumGpuFreeMiB);
+        Assert.Equal(ServerState.Ready, _controller.Status.State); Assert.Equal(originalFingerprint, _controller.Status.ConfigurationFingerprint);
+        Assert.Equal(4096, _controller.RunningConfiguration!.Profiles[0].Options.ContextSize);
+    }
+    [Fact]
+    public async Task OptimizationCancellationStopsTestProcessAndRestoresOriginal()
+    {
+        await _controller.StartAsync(_settings, _profile); await WaitFor(ServerState.Ready);
+        var fingerprint = _controller.Status.ConfigurationFingerprint;
+        var candidate = OptimizationPlan.Copy(_profile); candidate.Options.ContextSize = 4096;
+        candidate.ExtraArguments = ["--test-completion-delay", "30000"];
+        using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var progress = new InlineProgress(message => { if (message.Contains("Warming up")) cancel.CancelAfter(200); });
+        var options = new OptimizationOptions { ContextSize = 4096, GpuReserveMiB = 0 };
+        var report = await new OptimizationRunner(_controller, new ServerProbe(), GoodGpu).RunAsync(_settings, [new("slow", candidate)], options, progress, cancel.Token);
+        Assert.True(report.Canceled); Assert.Null(report.RestorationError);
+        Assert.Equal(ServerState.Ready, _controller.Status.State); Assert.Equal(fingerprint, _controller.Status.ConfigurationFingerprint);
+    }
+    [Fact]
+    public async Task UnknownReserveFailsPreflightWithoutStoppingActiveModel()
+    {
+        await _controller.StartAsync(_settings, _profile); await WaitFor(ServerState.Ready);
+        var pid = _controller.Status.ProcessId;
+        var candidate = OptimizationPlan.Copy(_profile); candidate.Options.ContextSize = 4096;
+        var runner = new OptimizationRunner(_controller, new ServerProbe(), _ => Task.FromResult<(IReadOnlyList<GpuStatistics>, string?)>(([], "unavailable")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => runner.RunAsync(_settings, [new("baseline", candidate)], new() { ContextSize = 4096 }, null, CancellationToken.None));
+        Assert.Equal(pid, _controller.Status.ProcessId); Assert.Equal(ServerState.Ready, _controller.Status.State);
+    }
+    [Fact]
+    public async Task ReserveViolationExcludesResultAndOriginallyStoppedServerStaysStopped()
+    {
+        var candidate = OptimizationPlan.Copy(_profile); candidate.Options.ContextSize = 4096;
+        var report = await new OptimizationRunner(_controller, new ServerProbe(), GoodGpu).RunAsync(_settings, [new("baseline", candidate)],
+            new() { ContextSize = 4096, GpuReserveMiB = 8000, Repetitions = 1 }, null, CancellationToken.None);
+        Assert.False(Assert.Single(report.Results).Eligible); Assert.Contains("reserve", report.Results[0].Error);
+        Assert.Equal(ServerState.Stopped, _controller.Status.State);
+    }
+    private static Task<(IReadOnlyList<GpuStatistics>, string?)> GoodGpu(CancellationToken _) =>
+        Task.FromResult<(IReadOnlyList<GpuStatistics>, string?)>(([new("0", "Test GPU", 10, 1024, 8192, 50)], null));
+    [Fact]
+    public async Task ShutdownDoesNotRestoreAServerAfterOptimization()
+    {
+        await _controller.StartAsync(_settings, _profile); await WaitFor(ServerState.Ready);
+        var candidate = OptimizationPlan.Copy(_profile); candidate.Options.ContextSize = 4096;
+        var report = await new OptimizationRunner(_controller, new ServerProbe(), GoodGpu).RunAsync(_settings, [new("baseline", candidate)],
+            new() { ContextSize = 4096, GpuReserveMiB = 0, Repetitions = 1 }, null, CancellationToken.None, () => false);
+        Assert.Null(report.RestorationError); Assert.Equal(ServerState.Stopped, _controller.Status.State);
+    }
+    [Fact]
+    public async Task RestorationFailureIsReportedAndLeavesNoTestServer()
+    {
+        await _controller.StartAsync(_settings, _profile); await WaitFor(ServerState.Ready);
+        var candidate = OptimizationPlan.Copy(_profile); candidate.Options.ContextSize = 4096;
+        candidate.ModelPath = Path.Combine(_directory, "alternate.gguf"); await File.WriteAllTextAsync(candidate.ModelPath, "GGUF");
+        File.Delete(_profile.ModelPath);
+        var report = await new OptimizationRunner(_controller, new ServerProbe(), GoodGpu).RunAsync(_settings, [new("baseline", candidate)],
+            new() { ContextSize = 4096, GpuReserveMiB = 0, Repetitions = 1 }, null, CancellationToken.None);
+        Assert.True(Assert.Single(report.Results).Eligible); Assert.NotNull(report.RestorationError);
+        Assert.Equal(ServerState.Stopped, _controller.Status.State);
+    }
+    private sealed class InlineProgress(Action<string> report) : IProgress<string> { public void Report(string value) => report(value); }
     public async Task DisposeAsync() { await _controller.DisposeAsync(); await _log.DisposeAsync(); Directory.Delete(_directory, true); }
 }

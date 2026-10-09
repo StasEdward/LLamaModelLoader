@@ -17,7 +17,7 @@ if (args[0] == "render")
     await session.Dispatch(async () =>
     {
         var data = Path.Combine(directory, "render-data"); Directory.CreateDirectory(data);
-        var model = Path.Combine(data, "Qwen3.5-9B-Q8_0.gguf"); await File.WriteAllTextAsync(model, "GGUF");
+        var model = Path.Combine(data, "Qwen3.5-9B-Q8_0.gguf"); WritePreviewModel(model);
         var profile = new ModelProfile { Name = "Qwen3.5 · 9B", Description = "General-purpose model · Q8_0", ModelPath = model, Options = new() { ContextSize = 4096, GpuLayers = "auto" } };
         await new ConfigurationStore(data).SaveAsync(new() { Profiles = [profile], SelectedProfileId = profile.Id, Settings = new() { ServerPath = @"D:\llama_cpp\llama-server.exe", ModelsDirectory = data } });
         await using var vm = new MainViewModel(data);
@@ -33,6 +33,11 @@ if (args[0] == "render")
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         }
         await Snapshot("home.png");
+        var metadataExpander = window.GetVisualDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "GGUF metadata");
+        metadataExpander.IsExpanded = true;
+        await Task.Delay(700); Dispatcher.UIThread.RunJobs();
+        if (!window.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text?.Contains("Training context: 262,144") == true)) throw new Exception("GGUF metadata was not displayed");
+        metadataExpander.BringIntoView(); await Snapshot("gguf-metadata.png"); metadataExpander.IsExpanded = false;
         var memoryData = Path.Combine(directory, "memory-data");
         var fixture = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../FakeLlamaServer/bin",
             AppContext.BaseDirectory.Contains("Release") ? "Release" : "Debug", "net10.0/FakeLlamaServer.exe"));
@@ -66,6 +71,51 @@ if (args[0] == "render")
                 bitmap.Save(Path.Combine(directory, "home-memory-unavailable.png"), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
             await memoryVm.StopCommand.ExecuteAsync(null); Dispatcher.UIThread.RunJobs();
             if (memoryVm.ShowMemory || memoryVm.Memory.HasData) throw new Exception("Memory was not cleared on stop");
+            var optimizer = new OptimizationWindow(memoryVm, memoryVm.SelectedProfile!); optimizer.Show();
+            await Task.Delay(100); Dispatcher.UIThread.RunJobs();
+            TextBox OptimizationInput(string name) => optimizer.GetVisualDescendants().OfType<TextBox>().Single(t => t.Name == name);
+            OptimizationInput("OptimizationReserve").Text = "0";
+            OptimizationInput("OptimizationContext").Text = "4096";
+            OptimizationInput("OptimizationRepetitions").Text = "1";
+            OptimizationInput("OptimizationTokens").Text = "16";
+            optimizer.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "OptimizationGpu").IsChecked = false;
+            Button OptimizationButton(string text) => optimizer.GetVisualDescendants().OfType<Button>().First(b => b.Content?.ToString() == text);
+            OptimizationButton("Preview candidates").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            using var optimizationTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            while (!OptimizationButton("Run benchmark").IsEnabled) await Task.Delay(50, optimizationTimeout.Token);
+            async Task OptimizationSnapshot(string file)
+            {
+                await Task.Delay(200); Dispatcher.UIThread.RunJobs(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                using var bitmap = optimizer.CaptureRenderedFrame() ?? throw new Exception("No optimization frame");
+                bitmap.Save(Path.Combine(directory, file), Avalonia.Media.Imaging.PngBitmapEncoderOptions.Default);
+            }
+            await OptimizationSnapshot("optimization-setup.png");
+            if (!OptimizationButton("Run benchmark").IsEnabled) throw new Exception("An unchanged preview was invalidated by delayed UI events");
+            OptimizationButton("Run benchmark").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (!memoryVm.IsOptimizing || memoryVm.CanStop || memoryVm.CanStart || memoryVm.CanRestart)
+                throw new Exception($"Optimization did not lock server controls: optimizing={memoryVm.IsOptimizing}, start={memoryVm.CanStart}, stop={memoryVm.CanStop}, restart={memoryVm.CanRestart}; " +
+                    optimizer.GetVisualDescendants().OfType<TextBlock>().Single(t => t.Name == "OptimizationStatus").Text);
+            try { await memoryVm.SaveProfileAsync(memoryVm.SelectedProfile!); throw new Exception("Profile edited during optimization"); }
+            catch (InvalidOperationException) { }
+            while (memoryVm.IsOptimizing) await Task.Delay(50, optimizationTimeout.Token);
+            await Task.Delay(200); Dispatcher.UIThread.RunJobs();
+            var saveResult = OptimizationButton("Save as new profile");
+            if (!saveResult.IsEnabled) throw new Exception("No eligible benchmark result");
+            var countBeforeSave = memoryVm.Profiles.Count;
+            saveResult.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            while (memoryVm.Profiles.Count == countBeforeSave) await Task.Delay(50, optimizationTimeout.Token);
+            if (memoryVm.Profiles[0].Options.ContextSize is not null || memoryVm.Profiles.Last().Options.ContextSize != 4096 || memoryVm.Status.State != ServerState.Stopped)
+                throw new Exception("Saving benchmark result changed original settings or server state");
+            optimizer.GetVisualDescendants().OfType<StackPanel>().Single(p => p.Name == "OptimizationResults").BringIntoView();
+            await OptimizationSnapshot("optimization-results.png");
+            optimizer.GetVisualDescendants().OfType<ComboBox>().Single(c => c.Name == "OptimizationMode").SelectedIndex = 1;
+            if (OptimizationButton("Run benchmark").IsEnabled) throw new Exception("A changed mode retained stale candidates");
+            OptimizationButton("Preview candidates").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            while (!OptimizationButton("Run benchmark").IsEnabled) await Task.Delay(50, optimizationTimeout.Token);
+            if (!optimizer.GetVisualDescendants().OfType<Expander>().Any(e => e.Header?.ToString() == memoryProfile.Name))
+                throw new Exception("Saved-profile comparison preview did not use the selected profile");
+            optimizer.Close();
+            Console.WriteLine("UI: optimization preview, run, exclusive controls, results, and save as new profile passed");
             memoryWindow.Close();
         }
         Console.WriteLine("UI: memory binding, log clear, restart, unavailable state, and stop passed");
@@ -165,12 +215,32 @@ else if (args[0] == "real")
     }
     catch { Console.Error.WriteLine(log.Snapshot()); throw; }
 }
+else if (args[0] == "metadata")
+{
+    var metadata = await GgufReader.ReadAsync(Path.GetFullPath(args[1]));
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(metadata with { ChatTemplate = metadata.ChatTemplate is null ? null : $"Present ({metadata.ChatTemplate.Length} characters)" },
+        new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+}
 else if (args[0] == "observe")
 {
     using var client = new StatisticsClient();
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
     var snapshot = await client.ReadAsync(args[1], timeout.Token);
     Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(snapshot, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+}
+
+static void WritePreviewModel(string path)
+{
+    using var writer = new BinaryWriter(File.Create(path), System.Text.Encoding.UTF8);
+    void Text(string text) { var bytes = System.Text.Encoding.UTF8.GetBytes(text); writer.Write((ulong)bytes.Length); writer.Write(bytes); }
+    void StringValue(string key, string value) { Text(key); writer.Write(8u); Text(value); }
+    void Integer(string key, uint value) { Text(key); writer.Write(4u); writer.Write(value); }
+    writer.Write("GGUF"u8); writer.Write(3u); writer.Write(2UL); writer.Write(6UL);
+    StringValue("general.name", "GGUF metadata demo"); StringValue("general.architecture", "qwen35");
+    Integer("qwen35.context_length", 262144); Integer("qwen35.block_count", 32);
+    StringValue("tokenizer.ggml.model", "gpt2"); StringValue("tokenizer.chat_template", "{{ messages }}");
+    Text("weight"); writer.Write(2u); writer.Write(4096UL); writer.Write(4096UL); writer.Write(8u); writer.Write(0UL);
+    Text("bias"); writer.Write(1u); writer.Write(4096UL); writer.Write(0u); writer.Write(0UL);
 }
 
 public static class UiBootstrap

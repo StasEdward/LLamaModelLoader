@@ -54,10 +54,24 @@ The headless UI ran against a local fixture process and checked actual controlle
 
 The installed executable's help confirms `--log-verbosity` and trace level 4. Its existing verbosity-3 startup log omits native allocation details. The real server was not restarted, and the user's saved configuration was not changed. Validation against a complete real memory-allocation log awaits the next model launch. The parser reports recognized buffer allocations only; it does not claim to measure total device VRAM or resident host memory.
 
+## GGUF metadata and performance optimization — October 10, 2026
+
+The Release build completed with no warnings or errors; all 73 .NET tests passed. Added checks cover little-endian GGUF v2/v3 and big-endian v3, skipped vocabulary arrays, tensor type/element counts without payloads, split files, cancellation, malformed/truncated/oversized headers, and arithmetic overflow.
+
+A read-only inspection of `D:\llama_cpp\Models\pareto-bf16.gguf` returned the embedded name `Qwen3.8-27B`, architecture `qwen35`, 27,320,697,856 stored tensor elements, 866 tensors, a 262,144-token training context, 65 layers, and a 248,320-entry vocabulary. Its descriptors contain multiple tensor quantization types despite the filename. A 9,993-character chat template was found. No weights were loaded and no inference request was sent for this check.
+
+Optimizer checks cover bounded candidate generation, opt-in precision/MTP changes, fixed context, unchanged source profiles, median ranking, uncached fixed-length requests, invalid timing/workload rejection, HTTP cancellation, and context verification. Process integration tests execute candidates through the fixture server, exclude a failed load or violated GPU reserve, restore the actual running configuration even after saved settings change, preserve an active server on failed preflight, cancel a stalled stream, skip restoration during shutdown, and report restoration failure while cleaning up the test server.
+
+Headless UI checks exercise metadata display, candidate preview, benchmark execution, disabled server/edit commands during testing, saving a result as a separate profile, and saved-profile comparison preview. A regression check covers delayed Avalonia TextChanged events invalidating an unchanged preview. Screenshots in `artifacts/screenshots-optimization` were visually inspected; selected previews are committed under `docs/images`. Throughput figures come from the fixture; GPU/RAM readings in this run are sampled host telemetry and are not measurements of a real model benchmark.
+
+Real-model optimization, performance improvements, answer quality, MTP/backend compatibility, and behavior under sustained third-party GPU load have not been benchmarked by this change. The search changes one group at a time and does not combine winners automatically. Memory reserve is a sampled eligibility criterion, not a hard allocation cap; short-lived peaks may be missed. Long-context performance must be measured with a representative prompt. Benchmarking temporarily interrupts the owned server and loses its conversation caches even when its launch settings are restored.
+
+The standalone build is published to `artifacts/app-optimization`, with the complete distribution in `artifacts/LLamaModelLoader-optimization-win-x64.zip`. User configuration remains schema 2. Reports are separate JSON files under the data directory's `benchmarks` folder.
+
 ## Verification limits
 
 Localhost checks ran outside the sandbox because it blocked socket connections and parts of the test runner's IPC. The final publish retrieved dependencies and NuGet audit data outside that restriction.
 
 Windows sign-in with autostart enabled, physical tray interaction, tray restoration after restarting Explorer, and other machines have not been manually tested. Autostart is disabled in the current profile. There is no separate graceful HTTP request drain: stopping terminates the process tree.
 
-GGUF selection checks are limited to file existence, standard shard names, and obvious mmproj filtering. llama.cpp validates weight contents and compatibility. Help output confirms flag availability; actual model loading verifies backend/cache value combinations.
+GGUF launch preflight checks file existence, standard shard names, and obvious mmproj filtering. The separate metadata reader inspects headers and tensor descriptors; it does not validate tensor payloads. llama.cpp validates weight contents and compatibility. Help output confirms flag availability; actual model loading verifies backend/cache value combinations.

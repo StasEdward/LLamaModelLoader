@@ -15,6 +15,8 @@ public sealed class ServerController(ServerProbe probe, SessionLog log) : IAsync
     private Task[] _readers = [];
     private MemoryLogParser _memory = new();
     public MemoryBreakdown Memory => _memory.Snapshot;
+    private Configuration? _runningConfiguration;
+    public Configuration? RunningConfiguration => _runningConfiguration?.Clone();
     public ServerStatus Status { get; private set; } = new(ServerState.Stopped, "Server stopped");
     public event Action<ServerStatus>? StatusChanged;
 
@@ -87,6 +89,7 @@ public sealed class ServerController(ServerProbe probe, SessionLog log) : IAsync
             var child = _child;
             var token = _session.Token;
             var url = $"http://127.0.0.1:{settings.Port}";
+            _runningConfiguration = new Configuration { Settings = settings, Profiles = [profile], SelectedProfileId = profile.Id }.Clone();
             Publish(new(ServerState.Starting, "Loading model…", profile.Id, child.Process.Id, url, DateTimeOffset.Now,
                 ConfigurationFingerprint: Arguments.Fingerprint(settings, profile), WebUiEnabled: !args.Contains("--no-webui")));
             log.Add(Arguments.Preview(settings.ServerPath, args));

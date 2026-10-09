@@ -4,6 +4,16 @@ A .NET 10 and Avalonia application for selecting local GGUF models, configuring 
 
 Plan dated October 9, 2026. LLamaModelLoader is a working name. The initial target is Windows x64. In the MVP, loading a model means loading local weights into llama.cpp. Downloading files is a separate later phase. This document records the original design; subsequent features and verification are described in README.md and verification.md.
 
+## Implementation status — October 10, 2026
+
+The original MVP is implemented. Later additions include server statistics and NVIDIA telemetry, a cumulative session generation rate, speculative/MTP fields, API aliases from profile names, and a startup memory breakdown.
+
+GGUF v2/v3 header inspection is now available on Home and in the profile editor, including split files, tensor-type counts, stored tensor element counts, tokenizer information, and chat templates. It does not load weights or replace llama.cpp validation.
+
+The Optimize window now supports a bounded automatic candidate search and comparison of saved profiles for the same model. Context and slot count stay fixed; KV precision and MTP changes require opt-in. A native streaming benchmark ranks completed measurements, records sampled memory, restores the previous running configuration, and saves chosen results as new profiles. This is the first tuning iteration; combining winning groups, broader search, and quality evaluation remain future work.
+
+The sections below retain the original design for context. Current usage and limitations are documented in [README](../README.md); executed checks are recorded in [verification](verification.md).
+
 ## MVP scope
 
 Include application settings, a local model catalog, profile creation/editing, server controls, readiness checks, logs, tray integration, and startup options. Only one managed process runs at a time. One GGUF file can have multiple profiles, such as Work 8K and Large context 32K.
