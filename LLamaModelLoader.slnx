@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LLamaModelLoader.Core/LLamaModelLoader.Core.csproj" />
+    <Project Path="src/LLamaModelLoader.Infrastructure/LLamaModelLoader.Infrastructure.csproj" />
+    <Project Path="src/LLamaModelLoader.Desktop/LLamaModelLoader.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LLamaModelLoader.Tests/LLamaModelLoader.Tests.csproj" />
+    <Project Path="tests/FakeLlamaServer/FakeLlamaServer.csproj" />
+    <Project Path="tests/SmokeChecks/SmokeChecks.csproj" />
+  </Folder>
+</Solution>

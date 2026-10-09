@@ -1,0 +1,33 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:conv="using:Avalonia.Data.Converters" x:Class="LLamaModelLoader.Desktop.MainWindow"
+        Title="Llama Model Loader" Width="1180" Height="820" MinWidth="900" MinHeight="640" WindowStartupLocation="CenterScreen">
+  <Grid ColumnDefinitions="210,*">
+    <Border Background="#151B25" BorderBrush="#283245" BorderThickness="0,0,1,0" Padding="22,30">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,38">
+          <TextBlock Text="LLAMA" FontSize="26" FontWeight="Bold" Foreground="#8BE3C1" LetterSpacing="3" />
+          <TextBlock Text="MODEL LOADER" FontSize="10" LetterSpacing="2" Classes="muted" />
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Spacing="8">
+          <TextBlock Text="Local inference" FontSize="12" Classes="muted" />
+          <TextBlock Text=".NET 10 · llama.cpp" FontSize="11" Foreground="#617189" />
+          <Button Content="Exit" Click="ExitClick" Classes="nav" ToolTip.Tip="Stop the server and exit the application" />
+        </StackPanel>
+        <StackPanel>
+          <Button Content="◉  Home" Click="HomeClick" Classes="nav" />
+          <Button Content="▤  Models" Click="ModelsClick" Classes="nav" />
+          <Button Content="▥  Statistics" Click="StatisticsClick" Classes="nav" />
+          <Button Content="⚙  Settings" Click="SettingsClick" Classes="nav" />
+        </StackPanel>
+      </DockPanel>
+    </Border>
+    <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" Margin="32,26">
+      <Border Grid.Row="0" Background="#342B20" CornerRadius="8" Padding="12" Margin="0,0,0,14" IsVisible="{Binding Notice, Converter={x:Static conv:StringConverters.IsNotNullOrEmpty}}">
+        <TextBlock Text="{Binding Notice}" TextWrapping="Wrap" Foreground="#F0D69D" />
+      </Border>
+      <ContentControl Grid.Row="1" Name="PageHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
+      <Border Grid.Row="2" BorderBrush="#283245" BorderThickness="0,1,0,0" Padding="0,14,0,0" Margin="0,18,0,0">
+        <Grid ColumnDefinitions="*,Auto"><TextBlock Text="{Binding StatusText}" Classes="muted" /><TextBlock Grid.Column="1" Text="{Binding Elapsed}" Classes="muted" FontSize="11" /></Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>

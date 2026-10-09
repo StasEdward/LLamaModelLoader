@@ -1,0 +1,13 @@
+<Application xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="LLamaModelLoader.Desktop.App" RequestedThemeVariant="Dark">
+  <Application.Styles>
+    <FluentTheme />
+    <Style Selector="Window"><Setter Property="FontFamily" Value="Inter, Segoe UI" /><Setter Property="Background" Value="#10141C" /></Style>
+    <Style Selector="Button"><Setter Property="Padding" Value="16,10" /><Setter Property="CornerRadius" Value="8" /></Style>
+    <Style Selector="Button.primary"><Setter Property="Background" Value="#8BE3C1" /><Setter Property="Foreground" Value="#0A2520" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+    <Style Selector="Button.nav"><Setter Property="HorizontalAlignment" Value="Stretch" /><Setter Property="HorizontalContentAlignment" Value="Left" /><Setter Property="Background" Value="Transparent" /><Setter Property="Margin" Value="0,3" /></Style>
+    <Style Selector="TextBox"><Setter Property="CornerRadius" Value="6" /><Setter Property="MinHeight" Value="36" /></Style>
+    <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="#9AA9BC" /><Setter Property="TextWrapping" Value="Wrap" /></Style>
+    <Style Selector="TextBlock.title"><Setter Property="FontSize" Value="28" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+    <Style Selector="Border.card"><Setter Property="Background" Value="#191F2B" /><Setter Property="CornerRadius" Value="12" /><Setter Property="Padding" Value="22" /><Setter Property="BorderBrush" Value="#283245" /><Setter Property="BorderThickness" Value="1" /></Style>
+  </Application.Styles>
+</Application>
