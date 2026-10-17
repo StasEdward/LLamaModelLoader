@@ -41,7 +41,10 @@ public sealed class SingleInstance : IDisposable
         try { await pipe.ConnectAsync(3000); await pipe.WriteAsync(new byte[] { 1 }); }
         catch (TimeoutException) { }
     }
-    public async Task ListenAsync(Action activate)
+    private Task? _listening;
+    // The pipe allows a single server instance; a second loop would spin synchronously on "all pipe instances are busy".
+    public Task ListenAsync(Action activate) => _listening ??= ListenCoreAsync(activate);
+    private async Task ListenCoreAsync(Action activate)
     {
         while (!_stop.IsCancellationRequested)
         {

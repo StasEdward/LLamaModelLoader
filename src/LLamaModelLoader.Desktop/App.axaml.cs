@@ -42,8 +42,11 @@ public partial class App : Application
                 if (_tray.NativeMenuExporter is not null) window.Hide(); else _ = ExitAsync();
             };
             desktop.ShutdownRequested += async (_, e) => { if (!_exiting) { e.Cancel = true; await ExitAsync(); } };
-            window.Opened += async (_, _) =>
+            // Opened is raised again on every Show() after Hide(), so startup actions must run only once.
+            EventHandler? opened = null;
+            window.Opened += opened = async (_, _) =>
             {
+                window.Opened -= opened;
                 _ = Program.Instance.ListenAsync(() => Dispatcher.UIThread.Post(() => Show(window)));
                 if (_viewModel.HadConfiguration && !_viewModel.IsReadOnly && string.IsNullOrEmpty(_viewModel.Notice) &&
                     File.Exists(_viewModel.Configuration.Settings.ServerPath) && _viewModel.SelectedProfile is not null)
