@@ -56,6 +56,32 @@ public static class GgufReader
             types, parts.Count, bytes, version);
     }
 
+    /// <summary>Reads only the metadata section, so a downloaded header prefix is enough. A prefix that ends early throws <see cref="GgufTruncatedException"/>.</summary>
+    public static GgufKvShape ReadKvShape(Stream stream, CancellationToken token = default)
+    {
+        var values = new HeaderReader(stream, token, true).ReadMetadata(out _, out _);
+        var architecture = values.GetValueOrDefault("general.architecture") as string;
+        int? Scalar(string suffix) => values.GetValueOrDefault(architecture + suffix) switch
+        {
+            byte or sbyte or ushort or short or uint or int or ulong or long => Convert.ToInt32(values[architecture + suffix], CultureInfo.InvariantCulture),
+            _ => null
+        };
+        int[]? Array(string suffix) => values.GetValueOrDefault(architecture + suffix) as int[];
+        var layers = Scalar(".block_count");
+        if (architecture is null || layers is not (> 0 and <= 100_000)) throw new InvalidDataException("The GGUF header has no layer information.");
+        int[]? PerLayer(string suffix) => Array(suffix) is { } array
+            ? array.Length == layers ? array : throw new InvalidDataException($"The GGUF {suffix.TrimStart('.')} array does not match the layer count.")
+            : Scalar(suffix) is { } scalar ? [.. Enumerable.Repeat(scalar, layers.Value)] : null;
+        var heads = PerLayer(".attention.head_count");
+        var headsKv = PerLayer(".attention.head_count_kv") ?? heads ?? throw new InvalidDataException("The GGUF header has no layer information.");
+        int? Fallback() => Scalar(".embedding_length") is { } embedding && heads?.Max() is > 0 and var maximum ? embedding / maximum : null;
+        var key = Scalar(".attention.key_length") ?? Fallback() ?? throw new InvalidDataException("The GGUF header has no layer information.");
+        var value = Scalar(".attention.value_length") ?? Fallback() ?? throw new InvalidDataException("The GGUF header has no layer information.");
+        var vocabulary = values.GetValueOrDefault("tokenizer.ggml.tokens.length") is ulong tokens ? tokens : (ulong?)null;
+        return new(architecture, layers.Value, headsKv, key, value, vocabulary, Scalar(".attention.kv_lora_rank"), Scalar(".rope.dimension_count"),
+            values.ContainsKey(architecture + ".attention.sliding_window"), values.Keys.Any(k => k.StartsWith(architecture + ".ssm.", StringComparison.Ordinal)));
+    }
+
     private static string TypeName(uint type) => type switch
     {
         0 => "F32", 1 => "F16", 2 => "Q4_0", 3 => "Q4_1", 6 => "Q5_0", 7 => "Q5_1", 8 => "Q8_0", 9 => "Q8_1",
@@ -65,16 +91,22 @@ public static class GgufReader
         29 => "IQ1_M", 30 => "BF16", 34 => "TQ1_0", 35 => "TQ2_0", _ => $"Type {type}"
     };
 
-    private sealed class HeaderReader(FileStream stream, CancellationToken token)
+    private sealed class HeaderReader(Stream stream, CancellationToken token, bool prefix = false)
     {
         private bool _bigEndian;
         private const long HeaderLimit = 512 * 1024 * 1024;
+        private static readonly string[] RetainedSuffixes =
+        [
+            ".context_length", ".block_count", ".attention.head_count", ".attention.head_count_kv", ".attention.key_length", ".attention.value_length",
+            ".embedding_length", ".attention.sliding_window", ".attention.kv_lora_rank", ".rope.dimension_count"
+        ];
         private readonly byte[] _number = new byte[8];
         private void Ensure(long length)
         {
             token.ThrowIfCancellationRequested();
-            if (length < 0 || length > stream.Length - stream.Position || length > HeaderLimit - stream.Position)
-                throw new InvalidDataException("GGUF header is truncated or exceeds the 512 MiB inspection limit.");
+            const string message = "GGUF header is truncated or exceeds the 512 MiB inspection limit.";
+            if (length < 0 || length > HeaderLimit - stream.Position) throw new InvalidDataException(message);
+            if (length > stream.Length - stream.Position) throw prefix ? new GgufTruncatedException(message) : new InvalidDataException(message);
         }
         private ReadOnlySpan<byte> Bytes(int count) { Ensure(count); stream.ReadExactly(_number.AsSpan(0, count)); return _number.AsSpan(0, count); }
         public uint U32() => _bigEndian ? BinaryPrimitives.ReadUInt32BigEndian(Bytes(4)) : BinaryPrimitives.ReadUInt32LittleEndian(Bytes(4));
@@ -104,9 +136,10 @@ public static class GgufReader
                 var type = U32();
                 var retain = key is "general.name" or "general.architecture" or "general.size_label" or
                     "tokenizer.ggml.model" or "tokenizer.chat_template" or "split.count" or "split.no" ||
-                    key.EndsWith(".context_length", StringComparison.Ordinal) || key.EndsWith(".block_count", StringComparison.Ordinal);
+                    RetainedSuffixes.Any(suffix => key.EndsWith(suffix, StringComparison.Ordinal));
                 var value = Value(type, retain, out var arrayLength);
                 if (retain && value is not null && values.Count < 2048) values[key] = value;
+                else if (key.Contains(".ssm.", StringComparison.Ordinal) && values.Count < 2048) values[key] = true; // Only its presence marks a recurrent model.
                 if (key == "tokenizer.ggml.tokens" && arrayLength is { } length) values[key + ".length"] = length;
             }
             return values;
@@ -131,6 +164,12 @@ public static class GgufReader
                 case 9:
                     var element = U32(); var count = U64(); arrayLength = count;
                     if (element > 12 || element == 9 || count > 16_000_000) throw new InvalidDataException("Unsupported or oversized GGUF array.");
+                    if (retain && element <= 5 && count <= 4096)
+                    {
+                        var numbers = new int[count];
+                        for (var i = 0; i < numbers.Length; i++) numbers[i] = Convert.ToInt32(Value(element, false, out _), CultureInfo.InvariantCulture);
+                        return numbers;
+                    }
                     if (element == 8) { for (ulong i = 0; i < count; i++) String(false); }
                     else
                     {
@@ -143,3 +182,6 @@ public static class GgufReader
         }
     }
 }
+
+/// <summary>The header prefix ended before the metadata did; a longer prefix may succeed.</summary>
+public sealed class GgufTruncatedException(string message) : Exception(message);
