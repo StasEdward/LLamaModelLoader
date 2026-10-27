@@ -18,7 +18,7 @@ public sealed class DownloadItem
     public string Message { get; internal set; } = "";
     public string? FinalPath { get; internal set; }
     internal CancellationTokenSource? Cancellation { get; set; }
-    internal TaskCompletionSource? Running { get; set; }
+    internal string? Folder { get; set; } // The models folder this item's transfer started in, so its .part is deleted there even if Settings changed.
 }
 
 /// <summary>Runs queued downloads one at a time on a background worker. Events are raised on that worker thread, so UI observers marshal them themselves.</summary>
@@ -28,6 +28,7 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
     private readonly List<DownloadItem> _items = [];
     private CancellationTokenSource _lifetime = new();
     private Task? _worker;
+    private bool _disposed;
 
     public event Action<DownloadItem>? Changed;
 
@@ -37,6 +38,7 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
 
     public DownloadItem Enqueue(string repoId, string sha, HfQuantization quant, int context, string kvType, FitResult? fit)
     {
+        lock (_gate) ObjectDisposedException.ThrowIf(_disposed, this);
         var folder = modelsDirectory();
         if (string.IsNullOrWhiteSpace(folder) || !Path.IsPathFullyQualified(folder) || !Directory.Exists(folder))
             throw new InvalidOperationException("Set a models folder in Settings first.");
@@ -61,7 +63,7 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
         CancellationTokenSource? cancellation;
         lock (_gate)
         {
-            if (item.State is not (DownloadItemState.Queued or DownloadItemState.Downloading)) return;
+            if (!_items.Contains(item) || item.State is not (DownloadItemState.Queued or DownloadItemState.Downloading)) return;
             item.State = DownloadItemState.Paused; item.Message = "Paused."; cancellation = item.Cancellation;
         }
         Cancel(cancellation);
@@ -78,20 +80,19 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
         Raise(item);
     }
 
-    /// <summary>Stops the item if it is running and deletes its .part files once the transfer has let go of them.</summary>
+    /// <summary>Removes the item and deletes its .part files. A running item is cancelled and the worker deletes once the transfer let go of the file, so a new download of the same quantization cannot start in between.</summary>
     public void Remove(DownloadItem item)
     {
-        CancellationTokenSource? cancellation; Task? stopped;
+        CancellationTokenSource? cancellation;
         lock (_gate)
         {
             if (!_items.Remove(item)) return;
-            cancellation = item.Cancellation; stopped = item.Running?.Task;
+            cancellation = item.Cancellation;
+            // Deleting under the lock keeps an immediate Enqueue of the same quantization from starting before the files are gone.
+            if (cancellation is null && item.State != DownloadItemState.Completed) DeletePartial(item);
         }
         Cancel(cancellation);
         Raise(item);
-        if (item.State == DownloadItemState.Completed) return;
-        if (stopped is null || stopped.IsCompleted) DeletePartial(item);
-        else _ = stopped.ContinueWith(_ => DeletePartial(item), TaskScheduler.Default);
     }
 
     public async Task CancelAllAsync()
@@ -105,12 +106,13 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
         }
         Cancel(stopping);
         foreach (var item in changed) Raise(item);
-        if (worker is not null) await worker;
+        if (worker is not null) await worker; // The worker also finishes the .part deletions of removed items.
         stopping.Dispose();
     }
 
     public async ValueTask DisposeAsync()
     {
+        lock (_gate) _disposed = true;
         await CancelAllAsync();
         lock (_gate) _lifetime.Dispose();
     }
@@ -123,21 +125,21 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
     {
         while (true)
         {
-            DownloadItem item; CancellationTokenSource cancellation; TaskCompletionSource running;
+            DownloadItem item; CancellationTokenSource cancellation;
             lock (_gate)
             {
                 var next = _items.FirstOrDefault(i => i.State == DownloadItemState.Queued);
                 if (next is null) { _worker = null; return; }
                 item = next; item.State = DownloadItemState.Downloading; item.Message = "";
                 cancellation = item.Cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-                running = item.Running = new(TaskCreationOptions.RunContinuationsAsynchronously);
             }
             Raise(item);
             try { await DownloadAsync(item, cancellation.Token); }
             finally
             {
-                lock (_gate) { item.Cancellation = null; cancellation.Dispose(); }
-                running.SetResult();
+                bool removed;
+                lock (_gate) { item.Cancellation = null; cancellation.Dispose(); removed = !_items.Contains(item); }
+                if (removed) DeletePartial(item); // Before the next item starts, which may be the same quantization again.
             }
         }
     }
@@ -147,7 +149,7 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
     {
         try
         {
-            var downloader = new ModelDownloader(modelsDirectory(), http, freeSpace);
+            var downloader = new ModelDownloader(item.Folder = modelsDirectory(), http, freeSpace);
             var path = await downloader.DownloadAsync(item.RepoId, item.Sha, item.Quantization, new Sink(p => Update(item, i => i.Progress = p)), token);
             Update(item, i => { i.State = DownloadItemState.Completed; i.FinalPath = path; i.Message = "Downloaded."; }, finishing: true);
         }
@@ -171,7 +173,7 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
 
     private void DeletePartial(DownloadItem item)
     {
-        try { new ModelDownloader(modelsDirectory(), http, freeSpace).DeletePartial(item.RepoId, item.Quantization); }
+        try { new ModelDownloader(item.Folder ?? modelsDirectory(), http, freeSpace).DeletePartial(item.RepoId, item.Quantization); }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException) { } // The folder changed or became unusable; nothing safe left to delete.
     }
 
@@ -181,7 +183,15 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
         catch (ObjectDisposedException) { } // The transfer ended and released its token first.
     }
 
-    private void Raise(DownloadItem item) => Changed?.Invoke(item);
+    // A faulty subscriber must never change queue state, so each handler is isolated.
+    private void Raise(DownloadItem item)
+    {
+        foreach (var handler in Changed?.GetInvocationList() ?? [])
+        {
+            try { ((Action<DownloadItem>)handler)(item); }
+            catch { }
+        }
+    }
 
     private sealed class Sink(Action<DownloadProgress> report) : IProgress<DownloadProgress>
     {

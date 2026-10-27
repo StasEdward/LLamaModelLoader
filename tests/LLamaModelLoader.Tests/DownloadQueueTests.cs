@@ -159,6 +159,60 @@ public sealed class DownloadQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoveThenEnqueueAgainStartsFromScratchAndVerifies()
+    {
+        var body = new Body(First, stallAfter: 150); var ranges = new List<string?>();
+        using var http = Http(request =>
+        {
+            lock (ranges) { ranges.Add(request.Headers.Range?.ToString()); return ranges.Count == 1 ? Reply(new StreamContent(body)) : Reply(new ByteArrayContent(First)); }
+        });
+        await using var queue = Queue(http);
+        var x = Add(queue, "o/a", FileA);
+        await body.Stalled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        queue.Remove(x);
+        var y = Add(queue, "o/a", FileA);
+        Assert.NotSame(x, y);
+        await Until(() => y.State == DownloadItemState.Completed);
+        // The old .part is gone before the new transfer starts, so nothing can be resumed from or truncated under it.
+        lock (ranges) Assert.Equal(new string?[] { null, null }, ranges.ToArray());
+        Assert.Equal(First, File.ReadAllBytes(y.FinalPath!));
+        Assert.Equal([y], queue.Items);
+    }
+
+    [Fact]
+    public async Task ThrowingSubscriberDoesNotAffectQueue()
+    {
+        var body = new Body(First, stallAfter: 150);
+        using var http = Http(request => Reply(request.RequestUri!.AbsolutePath.Contains("/o/a/") ? new StreamContent(body) : new ByteArrayContent(Second)));
+        await using var queue = Queue(http); var seen = 0;
+        queue.Changed += _ => throw new InvalidOperationException("Faulty subscriber");
+        queue.Changed += _ => Interlocked.Increment(ref seen);
+        var a = Add(queue, "o/a", FileA); var b = Add(queue, "o/b", FileB);
+        await body.Stalled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        queue.Pause(a);
+        await Until(() => b.State == DownloadItemState.Completed);
+        await queue.CancelAllAsync();
+        Assert.False(queue.IsActive);
+        Assert.Equal(DownloadItemState.Paused, a.State);
+        Assert.True(seen > 0);
+    }
+
+    [Fact]
+    public async Task EnqueueAfterDisposeThrowsAndPauseIgnoresRemovedItems()
+    {
+        var body = new Body(First, stallAfter: 0);
+        using var http = Http(_ => Reply(new StreamContent(body)));
+        var queue = Queue(http);
+        var a = Add(queue, "o/a", FileA); var b = Add(queue, "o/b", FileB);
+        await body.Stalled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        queue.Remove(b); queue.Pause(b);
+        Assert.Equal(DownloadItemState.Queued, b.State);
+        await queue.DisposeAsync();
+        Assert.Throws<ObjectDisposedException>(() => Add(queue, "o/c", FileA));
+        Assert.Equal(DownloadItemState.Paused, a.State);
+    }
+
+    [Fact]
     public async Task RemoveOfCompletedItemKeepsFile()
     {
         using var http = Http(_ => Reply(new ByteArrayContent(First)));
@@ -179,9 +233,10 @@ public sealed class DownloadQueueTests : IDisposable
         var a = Add(queue, "o/a", FileA); var b = Add(queue, "o/b", FileB);
         await body.Stalled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await queue.CancelAllAsync();
+        // The transfer has released its file: an exclusive open only works once the download let go of it.
+        using (var exclusive = new FileStream(Part("o/a", FileA), FileMode.Open, FileAccess.Read, FileShare.None)) Assert.Equal(150, exclusive.Length);
         Assert.False(queue.IsActive);
         Assert.Equal([DownloadItemState.Paused, DownloadItemState.Paused], queue.Items.Select(i => i.State));
-        Assert.Equal(150, new FileInfo(Part("o/a", FileA)).Length);
         Assert.False(File.Exists(Part("o/b", FileB)));
     }
 
