@@ -13,6 +13,7 @@ Built with **.NET 10**, **Avalonia**, and **CommunityToolkit.Mvvm**. The interfa
 - **Server controls:** start, stop, and restart the selected model; open the server Web UI or copy its API address.
 - **Built-in chat:** test the running model with streaming replies, a separate thinking panel, multi-turn history, and request cancellation.
 - **llama.cpp installations:** download official Windows x64 CPU, Vulkan, or CUDA builds, check for updates, and switch between installed versions.
+- **Discover models:** search GGUF models on Hugging Face, see whether each quantization fits your GPU for a chosen context, and download with resume and SHA-256 verification.
 - **Model profiles:** add, edit, duplicate, and delete profiles. Browse your models folder or select a GGUF file directly.
 - **Profile import/export:** share one profile or all profiles as portable JSON, review imports, and locate matching local GGUF files.
 - **GGUF metadata:** inspect architecture, stored parameter count, tensor quantization types, training context, layers, tokenizer, and chat template without loading weights.
@@ -89,6 +90,47 @@ Updates are checked on demand. Internet access to the GitHub API and release dow
 ![llama.cpp installation manager](docs/images/server-installations.png)
 
 *Demo release and fixture executable from automated UI checks.*
+
+</details>
+
+## Discover and download models
+
+Open **⇩ Discover** in the sidebar, between **Models** and **Chat**. Search uses the public Hugging Face API and lists GGUF repositories only. Sort by **Most downloaded**, **Most liked**, **Recently updated**, or **Trending**, and click **Load more** for the next page. Gated repositories cannot be downloaded; they offer **Open on Hugging Face** instead.
+
+Select a repository to list its quantizations. Split GGUF parts are grouped into one entry, and `mmproj` files are hidden. For each quantization, the page estimates whether it fits your GPU:
+
+- **Context** offers values from 4096 up to the model's maximum. The default is 16384, capped at that maximum.
+- **KV cache type** is `f16`, `q8_0`, or `q4_0`.
+- The estimate is the weights (file sizes), plus the KV cache for the chosen context, plus compute buffers, plus a 1 GiB reserve. The KV cache size comes from the remote GGUF header, read through HTTP Range requests (up to 64 MiB), without downloading any weights.
+- VRAM is detected with `nvidia-smi`: the total memory is used, and current use is shown for information. Enter **Manual VRAM (GiB)** to override it. Partial offload also counts system RAM, minus 8 GiB held back for the system.
+
+| Badge | Meaning |
+| --- | --- |
+| Green **Fits in VRAM** | The whole model fits. **Create profile** then uses `--gpu-layers all`. |
+| Amber **Partial offload · N/M layers** | `N` of `M` layers fit on the GPU, and the rest use system RAM. **Create profile** suggests `--gpu-layers N`. Generation is slower. |
+| Red **Does not fit** | Even partial offload does not fit within VRAM plus available RAM. |
+| Grey **Unknown** | No estimate is possible. |
+
+A `≈` prefix marks an approximate estimate. It appears for sliding-window, MLA, and hybrid/recurrent models, where the full-attention formula is an upper bound. **size-only estimate** means the header could not be read, so the KV cache is not included. These badges are estimates: llama.cpp decides at load time, and **Loaded model memory** shows the real values.
+
+Click **Download** to fetch a quantization:
+
+- Files go to `{Models folder}\{owner}\{repo}\…`, so a models folder must be set in **Settings**.
+- A file is written with a `.part` suffix and resumed on the next attempt with an HTTP Range request. Its size and SHA-256 are verified against the repository metadata before it receives its final name. A mismatch deletes the `.part` file.
+- Free disk space is checked first, with a 256 MiB margin.
+- Downloads run one at a time, with **Pause**, **Resume**, and **Remove**. **Remove** deletes the `.part` file after confirmation. Downloads continue while you use other pages.
+- **Exit** asks for confirmation during a download. Exiting pauses it and keeps the `.part` file, so it can be resumed later.
+- Symbolic links and junctions inside the models folder are refused. The models folder itself may be one.
+- Only public repositories are supported. No token or cookie is stored or sent.
+
+After a download, **Create profile** opens the profile editor prefilled with the model path, the name `<repo>-<quant>`, the context, the KV cache type, and the GPU layers. Nothing is saved until you click **Save**.
+
+<details>
+<summary>Discover preview</summary>
+
+![Discover page with quantizations and fit badges](docs/images/discover.png)
+
+*Fixture repository and GPU from automated UI checks; badges are estimates.*
 
 </details>
 
@@ -304,7 +346,7 @@ dotnet run --project tests/SmokeChecks -c Release --no-build -- real 'D:\llama_c
 
 ## Current scope
 
-This version manages one local server. Model downloads, LAN hosting, and multiple simultaneous servers are not implemented. Built-in chat supports text conversations with the running model. Managed llama.cpp downloads support Windows x64 CPU, Vulkan, and CUDA; other backends can be installed manually and selected by path. GPU telemetry currently supports NVIDIA only. Available launch options and memory details depend on the selected llama.cpp build.
+This version manages one local server. LAN hosting and multiple simultaneous servers are not implemented. Model downloads support public Hugging Face GGUF repositories only. Built-in chat supports text conversations with the running model. Managed llama.cpp downloads support Windows x64 CPU, Vulkan, and CUDA; other backends can be installed manually and selected by path. GPU telemetry currently supports NVIDIA only. Available launch options and memory details depend on the selected llama.cpp build.
 
 For implementation notes and verification results, see the [MVP plan](docs/mvp-plan.md), [llama.cpp option research](docs/llama-server-research.md), and [verification report](docs/verification.md).
 
