@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
@@ -17,7 +19,6 @@ namespace LLamaModelLoader.Desktop;
 public sealed class DiscoverView : UserControl
 {
     private const string Unavailable = "Hugging Face is unavailable. Check the connection and try again.";
-    private const string RateLimited = "Hugging Face refused the request (rate limit). Try again later.";
     private const string NoFolder = "Set a models folder in Settings first.";
     private static readonly string[] KvTypes = ["f16", "q8_0", "q4_0"];
     private static readonly (string Label, HfSort Sort)[] Sorts = [("Most downloaded", HfSort.Downloads), ("Trending", HfSort.Trending), ("Most liked", HfSort.Likes), ("Recently updated", HfSort.LastModified)];
@@ -39,12 +40,14 @@ public sealed class DiscoverView : UserControl
     private readonly StackPanel _quantizations = new() { Name = "DiscoverQuantizations", Spacing = 8 }, _queue = new() { Name = "DiscoverQueue", Spacing = 12 };
     private readonly Control _settings;
     private readonly Dictionary<DownloadItem, (ProgressBar Bar, TextBlock Text)> _queueRows = [];
-    private List<(DownloadItem Item, DownloadItemState State)> _queueStates = [];
+    private List<(DownloadItem Item, DownloadItemState State)>? _queueStates;
+    private CancellationTokenSource? _searchCancellation, _detailsCancellation;
     private HfModelDetails? _selected;
     private GgufKvShape? _shape;
     private GpuMemory? _gpuMemory;
     private string? _nextPage;
     private int _searchVersion, _detailsVersion, _queuePending;
+    private bool _statusIsError; // An error stays visible until the next successful search or load replaces it.
 
     public DiscoverView(MainViewModel vm, Action<ModelProfile> createProfile, Func<CancellationToken, Task<(GpuMemory?, string?)>>? readGpu = null, Func<long>? readRam = null)
     {
@@ -78,7 +81,11 @@ public sealed class DiscoverView : UserControl
         _context.SelectionChanged += (_, _) => RenderQuantizations();
         _kvType.SelectionChanged += (_, _) => RenderQuantizations();
         _manualVram.TextChanged += (_, _) => RenderQuantizations();
-        _open.Click += (_, _) => { if (_selected is { } details) Process.Start(new ProcessStartInfo($"https://huggingface.co/{details.Id}") { UseShellExecute = true }); };
+        _open.Click += (_, _) =>
+        {
+            try { if (_selected is { } details) Process.Start(new ProcessStartInfo($"https://huggingface.co/{details.Id}") { UseShellExecute = true }); }
+            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { Fail(ex.Message); }
+        };
         _ = ReadGpuAsync(readGpu ?? (token => GpuInfo.ReadAsync(null, token)));
     }
 
@@ -117,19 +124,24 @@ public sealed class DiscoverView : UserControl
         var next = more ? _nextPage : null;
         if (more && next is null) return;
         var version = ++_searchVersion;
-        _searchButton.IsEnabled = _more.IsEnabled = false; _status.Text = "Searching Hugging Face…";
+        var cancellation = Restart(ref _searchCancellation);
+        _searchButton.IsEnabled = _more.IsEnabled = false; Inform("Searching Hugging Face…");
         try
         {
-            var (models, nextPage) = await _client.SearchAsync(_search.Text ?? "", Sorts[Math.Max(0, _sort.SelectedIndex)].Sort, next, _lifetime.Token);
+            var (models, nextPage) = await _client.SearchAsync(_search.Text ?? "", Sorts[Math.Max(0, _sort.SelectedIndex)].Sort, next, cancellation.Token);
             if (version != _searchVersion) return;
             if (!more) _models.Clear();
             foreach (var model in models) if (_models.All(m => m.Id != model.Id)) _models.Add(model);
             _nextPage = nextPage; _more.IsVisible = nextPage is not null;
-            _status.Text = _models.Count == 0 ? "No GGUF repositories match this search." : $"{_models.Count} repositories. Select one to see its quantizations.";
+            Inform(_models.Count == 0 ? "No GGUF repositories match this search." : $"{_models.Count} repositories. Select one to see its quantizations.");
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { if (version == _searchVersion) _status.Text = Describe(ex); }
-        finally { if (version == _searchVersion) _searchButton.IsEnabled = _more.IsEnabled = true; }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception ex) { if (version == _searchVersion) Fail(Describe(ex)); }
+        finally
+        {
+            if (version == _searchVersion) _searchButton.IsEnabled = _more.IsEnabled = true;
+            Finish(ref _searchCancellation, cancellation);
+        }
     }
 
     private async Task SelectAsync(HfModelSummary model)
@@ -137,10 +149,12 @@ public sealed class DiscoverView : UserControl
         var version = ++_detailsVersion;
         _selected = null; _shape = null; _title.Text = model.Id; _info.Text = "Loading the file list…"; _note.Text = "";
         _open.IsVisible = _settings.IsVisible = false; RenderQuantizations();
+        var cancellation = Restart(ref _detailsCancellation);
         try
         {
-            var details = await _client.GetDetailsAsync(model.Id, _lifetime.Token);
+            var details = await _client.GetDetailsAsync(model.Id, cancellation.Token);
             if (version != _detailsVersion) return;
+            if (_statusIsError) Inform("");
             _selected = details; _title.Text = details.Id;
             _info.Text = string.Join(" · ", new[] { details.Architecture, details.Parameters is { } p ? $"{p / 1e9:N1}B parameters" : null,
                 details.ContextLength is { } max ? $"max context {max:N0}" : null, details.License is { } license ? "licence " + license : null }.Where(x => x is not null));
@@ -151,28 +165,45 @@ public sealed class DiscoverView : UserControl
             if (details.Gated) { _note.Text = "Gated repository: its files need an accepted licence and a signed-in account, so it cannot be downloaded here."; return; }
             if (details.Quantizations.Count == 0) { _note.Text = "No downloadable GGUF files were found in this repository."; return; }
             _note.Text = "Reading the GGUF header for a context-aware estimate…";
-            var (shape, failure) = await ReadShapeAsync(details);
+            var (shape, failure) = await ReadShapeAsync(details, cancellation.Token);
             if (version != _detailsVersion) return;
             _shape = shape;
             _note.Text = shape is null ? $"Size-only estimates: the GGUF header could not be read. {failure}"
                 : $"{shape.Layers} layers · KV cache estimated from the GGUF header" + (shape.Approximate ? " · approximate for this architecture" : "");
             RenderQuantizations();
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception ex)
         {
             if (version != _detailsVersion) return;
-            _info.Text = ""; _status.Text = Describe(ex);
+            _info.Text = ""; Fail(Describe(ex));
         }
+        finally { Finish(ref _detailsCancellation, cancellation); }
     }
 
-    // The KV shape is the same for every quantization of a repository, so the smallest file's header is enough.
-    private async Task<(GgufKvShape?, string?)> ReadShapeAsync(HfModelDetails details)
+    // Starting an operation cancels its predecessor; each operation disposes its own source when it ends.
+    private CancellationTokenSource Restart(ref CancellationTokenSource? current)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        current?.Cancel();
+        return current = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+    }
+
+    private static void Finish(ref CancellationTokenSource? current, CancellationTokenSource cancellation)
+    {
+        if (current == cancellation) current = null;
+        cancellation.Dispose();
+    }
+
+    private void Inform(string text) { _status.Text = text; _statusIsError = false; }
+    private void Fail(string text) { _status.Text = text; _statusIsError = true; }
+
+    // The KV shape is the same for every quantization of a repository, so the smallest file's header is enough.
+    private async Task<(GgufKvShape?, string?)> ReadShapeAsync(HfModelDetails details, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
         try { return (await RemoteGguf.ReadKvShapeAsync(_vm.HubHttp, details.Id, details.Sha, details.Quantizations.MinBy(q => q.TotalBytes)!.FirstPath, timeout.Token), null); }
-        catch (OperationCanceledException) when (!_lifetime.IsCancellationRequested) { return (null, "Hugging Face did not respond in time."); }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { return (null, "Hugging Face did not respond in time."); }
         catch (Exception ex) when (ex is not OperationCanceledException) { return (null, Describe(ex)); }
     }
 
@@ -195,7 +226,7 @@ public sealed class DiscoverView : UserControl
         _quantizations.Children.Clear();
         if (_selected is not { } details) return;
         var folder = ModelsFolder;
-        if (folder is null && !details.Gated) _status.Text = NoFolder;
+        if (folder is null && !details.Gated && !_statusIsError) Inform(NoFolder);
         var downloader = folder is null ? null : new ModelDownloader(folder, _vm.HubHttp);
         foreach (var quant in details.Quantizations)
         {
@@ -226,9 +257,10 @@ public sealed class DiscoverView : UserControl
             {
                 case LocalModelState.Downloaded: button.Content = "Downloaded"; return button;
                 case LocalModelState.Conflict:
+                    // The file can change between GetState and this lookup, so a missing match must not throw from rendering.
                     var path = quant.Parts.Select(p => (File: p, Path: downloader.Destination(details.Id, p)))
-                        .First(p => Directory.Exists(p.Path) || (File.Exists(p.Path) && new FileInfo(p.Path).Length != p.File.Size)).Path;
-                    return Stack(button, Text($"A different file already exists at {path}.", "muted"));
+                        .Where(p => Directory.Exists(p.Path) || (File.Exists(p.Path) && new FileInfo(p.Path).Length != p.File.Size)).Select(p => p.Path).FirstOrDefault();
+                    return Stack(button, Text(path is null ? "A different file already exists at the destination." : $"A different file already exists at {path}.", "muted"));
                 case LocalModelState.Partial: button.Content = "Resume"; break;
             }
         }
@@ -237,7 +269,7 @@ public sealed class DiscoverView : UserControl
         button.Click += (_, _) =>
         {
             try { _vm.Downloads.Enqueue(details.Id, details.Sha, quant, Context, KvType, Estimate(quant)); }
-            catch (InvalidOperationException ex) { _status.Text = ex.Message; }
+            catch (InvalidOperationException ex) { Fail(ex.Message); }
         };
         return button;
     }
@@ -276,7 +308,7 @@ public sealed class DiscoverView : UserControl
     {
         var items = _vm.Downloads.Items;
         var states = items.Select(i => (i, i.State)).ToList();
-        if (!states.SequenceEqual(_queueStates))
+        if (_queueStates is null || !states.SequenceEqual(_queueStates))
         {
             _queueStates = states; _queueRows.Clear(); _queue.Children.Clear();
             foreach (var item in items) _queue.Children.Add(QueueRow(item));
@@ -341,7 +373,7 @@ public sealed class DiscoverView : UserControl
 
     private static string Describe(Exception ex) => ex switch
     {
-        HttpRequestException { Message: RateLimited } => RateLimited,
+        HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests or HttpStatusCode.Forbidden } => ex.Message,
         HttpRequestException => Unavailable,
         _ => ex.Message,
     };

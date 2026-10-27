@@ -52,7 +52,7 @@ public static partial class RemoteGguf
         request.Headers.AcceptEncoding.ParseAdd("identity"); // A compressed body would not line up with the byte offsets.
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
         if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
-            throw new HttpRequestException("Hugging Face refused the request (rate limit). Try again later.");
+            throw new HttpRequestException("Hugging Face refused the request (rate limit). Try again later.", null, response.StatusCode);
         if (response.StatusCode == HttpStatusCode.NotFound) throw new HttpRequestException("The file was not found on Hugging Face.");
         if (response.StatusCode != HttpStatusCode.PartialContent) throw new InvalidDataException("The server does not support range requests.");
         if (response.Content.Headers.ContentRange is not { From: { } from, To: { } to, Length: { } length } || from != have || to < from || to >= end || to >= length)

@@ -154,6 +154,7 @@ public sealed class HuggingFaceTests
         Assert.Equal("a/b", Assert.Single(models).Id); Assert.Equal("https://huggingface.co/api/models?cursor=n", next);
         var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.SearchAsync("qwen 3", HfSort.Downloads, next, default));
         Assert.Contains("rate limit", ex.Message);
+        Assert.Equal(HttpStatusCode.TooManyRequests, ex.StatusCode);
     }
 
     [Fact]

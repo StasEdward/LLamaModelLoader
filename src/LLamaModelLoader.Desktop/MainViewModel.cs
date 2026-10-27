@@ -82,7 +82,7 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
         _log = new(Path.Combine(directory, "logs"));
         _server = new(_probe, _log);
         _server.StatusChanged += _ => Dispatcher.UIThread.Post(Refresh);
-        HubHttp = new HttpClient(huggingFaceHandler ?? new HttpClientHandler()) { Timeout = Timeout.InfiniteTimeSpan };
+        HubHttp = new HttpClient(huggingFaceHandler ?? new HttpClientHandler { UseCookies = false }) { Timeout = Timeout.InfiniteTimeSpan };
         Downloads = new DownloadQueue(() => Configuration.Settings.ModelsDirectory, HubHttp);
         // Completed is raised again when the item is removed; only the raise while it is still listed is the completion.
         Downloads.Changed += item =>
@@ -241,7 +241,8 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         _disposing = true; CancelOptimization();
         if (_optimizationTask is { } task) { try { await task; } catch { /* Shutdown still owns process cleanup. */ } }
-        await Downloads.DisposeAsync(); HubHttp.Dispose();
+        try { await Downloads.DisposeAsync(); } catch { /* The server must still be stopped below. */ }
+        HubHttp.Dispose();
         await _server.DisposeAsync(); await _log.DisposeAsync(); _saveGate.Dispose();
     }
 }

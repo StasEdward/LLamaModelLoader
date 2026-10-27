@@ -45,7 +45,7 @@ public sealed partial class HuggingFaceClient(HttpClient http)
             request.Headers.Accept.ParseAdd("application/json");
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
-                throw new HttpRequestException("Hugging Face refused the request (rate limit). Try again later.");
+                throw new HttpRequestException("Hugging Face refused the request (rate limit). Try again later.", null, response.StatusCode);
             response.EnsureSuccessStatusCode();
             await response.Content.LoadIntoBufferAsync(8 * 1024 * 1024, timeout.Token);
             var link = response.Headers.TryGetValues("Link", out var values) ? string.Join(", ", values) : null;

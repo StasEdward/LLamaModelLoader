@@ -63,6 +63,7 @@ public static class DiscoverSmokeChecks
         }
 
         await SearchAsync();
+        if (!All<TextBlock>().Any(t => t.Text?.StartsWith("No downloads yet.") == true)) throw new Exception("The empty download queue shows no placeholder");
         await SelectAsync("g/gated");
         if (All<Button>().Any(b => b.Content?.ToString() is "Download" or "Resume" or "Downloaded") || !All<Button>().Any(b => b.Content?.ToString() == "Open on Hugging Face"))
             throw new Exception("A gated repository offered downloads or no Hugging Face link");

@@ -116,7 +116,7 @@ public sealed class ModelDownloader
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
         if ((response.RequestMessage?.RequestUri ?? uri).Scheme != Uri.UriSchemeHttps) throw new InvalidDataException("Download redirected to an insecure address.");
         if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
-            throw new HttpRequestException("Hugging Face refused the request (rate limit). Try again later.");
+            throw new HttpRequestException("Hugging Face refused the request (rate limit). Try again later.", null, response.StatusCode);
         if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && existing > 0) return false;
         response.EnsureSuccessStatusCode();
         var resume = response.StatusCode == HttpStatusCode.PartialContent;
