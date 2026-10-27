@@ -29,7 +29,7 @@ public sealed class ModelDownloaderTests : IDisposable
         Content = new ByteArrayContent(data[from..]) { Headers = { ContentRange = new ContentRangeHeaderValue(from, data.Length - 1, data.Length) } }
     };
     private static HttpResponseMessage Streamed(Stream body) => new(HttpStatusCode.OK) { Content = new StreamContent(body) };
-    private ModelDownloader Downloader(HttpClient http, Func<string, long>? freeSpace = null) => new(_root, http, freeSpace ?? (_ => long.MaxValue));
+    private ModelDownloader Downloader(HttpClient http, Func<string, long>? freeSpace = null, TimeSpan? idleTimeout = null) => new(_root, http, freeSpace ?? (_ => long.MaxValue), idleTimeout);
     private string Dest(HfFile file) => Downloader(Http((_, _) => throw new Exception())).Destination("o/r", file);
     private string[] Parts() => Directory.Exists(_root) ? Directory.GetFiles(_root, "*.part", SearchOption.AllDirectories) : [];
     private static string Write(string path, byte[] data) { Directory.CreateDirectory(Path.GetDirectoryName(path)!); File.WriteAllBytes(path, data); return path; }
@@ -152,6 +152,50 @@ public sealed class ModelDownloaderTests : IDisposable
     }
 
     [Fact]
+    public async Task StalledBodyThrowsAndKeepsReceivedBytes()
+    {
+        var body = new Body(First, stallAfter: 150);
+        using var http = Http((_, _) => Reply(Streamed(body)));
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => Downloader(http, idleTimeout: TimeSpan.FromMilliseconds(200)).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        Assert.Equal("The download stalled. Resume to continue.", ex.Message);
+        Assert.Equal(150, new FileInfo(Assert.Single(Parts())).Length);
+        Assert.False(File.Exists(Dest(Shard1)));
+    }
+
+    [Fact]
+    public async Task StalledResponseHeadersThrow()
+    {
+        using var http = Http(async (_, token) => { await Task.Delay(Timeout.Infinite, token); return Ok(First); });
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => Downloader(http, idleTimeout: TimeSpan.FromMilliseconds(200)).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        Assert.Equal("The download stalled. Resume to continue.", ex.Message);
+        Assert.False(File.Exists(Dest(Shard1)));
+    }
+
+    [Fact]
+    public void TransferRateUsesOnlyTheLastFiveSeconds()
+    {
+        var rate = new TransferRate();
+        Assert.Equal(0, rate.BytesPerSecond(TimeSpan.Zero));
+        rate.Add(1000, TimeSpan.FromSeconds(1));
+        Assert.Equal(500, rate.BytesPerSecond(TimeSpan.FromSeconds(2))); // A young transfer divides by its own duration.
+        for (var second = 3; second <= 10; second++) rate.Add(1000, TimeSpan.FromSeconds(second));
+        Assert.Equal(1000, rate.BytesPerSecond(TimeSpan.FromSeconds(10)));
+        Assert.Equal(400, rate.BytesPerSecond(TimeSpan.FromSeconds(13))); // Stalled since 10 s: only the samples at 9 and 10 s remain.
+        Assert.Equal(0, rate.BytesPerSecond(TimeSpan.FromSeconds(16)));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "The file or repository was not found or is not public.")]
+    [InlineData(HttpStatusCode.TooManyRequests, "Hugging Face refused the request (rate limit). Try again later.")]
+    public async Task ReportsRefusedRequests(HttpStatusCode status, string message)
+    {
+        using var http = Http((_, _) => Reply(new HttpResponseMessage(status)));
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        Assert.Equal(message, ex.Message);
+        Assert.Equal(status, ex.StatusCode);
+    }
+
+    [Fact]
     public async Task InsufficientSpaceFailsBeforeRequest()
     {
         var required = Sharded.TotalBytes + Margin; var asked = false;
@@ -179,17 +223,19 @@ public sealed class ModelDownloaderTests : IDisposable
     public async Task SkipsCompletePartsAndReportsState()
     {
         var downloader = Downloader(Http((_, _) => throw new Exception("Unused")));
-        Assert.Equal((LocalModelState.NotDownloaded, 0L), downloader.GetState("o/r", Sharded));
+        Assert.Equal((LocalModelState.NotDownloaded, 0L, (string?)null), downloader.GetState("o/r", Sharded));
         Write(downloader.Destination("o/r", Shard1), First);
-        Assert.Equal((LocalModelState.Partial, 300L), downloader.GetState("o/r", Sharded));
+        Assert.Equal((LocalModelState.Partial, 300L, (string?)null), downloader.GetState("o/r", Sharded));
         var requests = new List<string>();
         using var http = Http((request, _) => { requests.Add(request.RequestUri!.AbsolutePath); return Reply(Ok(Second)); });
         downloader = Downloader(http);
         await downloader.DownloadAsync("o/r", Sha, Sharded, null, default);
         Assert.Equal([$"/o/r/resolve/{Sha}/Q8_0/M-Q8_0-00002-of-00002.gguf"], requests);
-        Assert.Equal((LocalModelState.Downloaded, 500L), downloader.GetState("o/r", Sharded));
+        Assert.Equal((LocalModelState.Downloaded, 500L, (string?)null), downloader.GetState("o/r", Sharded));
         File.WriteAllBytes(downloader.Destination("o/r", Shard2), Second[..10]);
-        Assert.Equal(LocalModelState.Conflict, downloader.GetState("o/r", Sharded).State);
+        Assert.Equal((LocalModelState.Conflict, 0L, downloader.Destination("o/r", Shard2)), downloader.GetState("o/r", Sharded));
+        File.Delete(downloader.Destination("o/r", Shard2)); Directory.CreateDirectory(downloader.Destination("o/r", Shard2));
+        Assert.Equal(downloader.Destination("o/r", Shard2), downloader.GetState("o/r", Sharded).ConflictPath);
     }
 
     [Fact]
@@ -197,7 +243,7 @@ public sealed class ModelDownloaderTests : IDisposable
     {
         var downloader = Downloader(Http((_, _) => throw new Exception("Unused")));
         Write(downloader.Destination("o/r", Shard2) + ".part", Second[..40]);
-        Assert.Equal((LocalModelState.Partial, 40L), downloader.GetState("o/r", Sharded));
+        Assert.Equal((LocalModelState.Partial, 40L, (string?)null), downloader.GetState("o/r", Sharded));
     }
 
     [Fact]

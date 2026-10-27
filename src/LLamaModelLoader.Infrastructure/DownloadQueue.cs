@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using LLamaModelLoader.Core;
 
 namespace LLamaModelLoader.Infrastructure;
@@ -10,9 +11,9 @@ public sealed class DownloadItem
     public required string RepoId { get; init; }
     public required string Sha { get; init; }
     public required HfQuantization Quantization { get; init; }
-    public int ContextSize { get; init; }
-    public string KvType { get; init; } = "";
-    public FitResult? Fit { get; init; }
+    public int ContextSize { get; internal set; }
+    public string KvType { get; internal set; } = "";
+    public FitResult? Fit { get; internal set; }
     public DownloadItemState State { get; internal set; } = DownloadItemState.Queued;
     public DownloadProgress? Progress { get; internal set; }
     public string Message { get; internal set; } = "";
@@ -22,7 +23,7 @@ public sealed class DownloadItem
 }
 
 /// <summary>Runs queued downloads one at a time on a background worker. Events are raised on that worker thread, so UI observers marshal them themselves.</summary>
-public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http, Func<string, long>? freeSpace = null) : IAsyncDisposable
+public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http, Func<string, long>? freeSpace = null, TimeSpan? idleTimeout = null) : IAsyncDisposable
 {
     private readonly object _gate = new();
     private readonly List<DownloadItem> _items = [];
@@ -36,12 +37,13 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
 
     public bool IsActive { get { lock (_gate) return _items.Any(i => i.State == DownloadItemState.Downloading); } }
 
+    public static bool IsUsableModelsFolder([NotNullWhen(true)] string? folder) =>
+        !string.IsNullOrWhiteSpace(folder) && Path.IsPathFullyQualified(folder) && Directory.Exists(folder);
+
     public DownloadItem Enqueue(string repoId, string sha, HfQuantization quant, int context, string kvType, FitResult? fit)
     {
         lock (_gate) ObjectDisposedException.ThrowIf(_disposed, this);
-        var folder = modelsDirectory();
-        if (string.IsNullOrWhiteSpace(folder) || !Path.IsPathFullyQualified(folder) || !Directory.Exists(folder))
-            throw new InvalidOperationException("Set a models folder in Settings first.");
+        if (!IsUsableModelsFolder(modelsDirectory())) throw new InvalidOperationException("Set a models folder in Settings first.");
         DownloadItem item;
         lock (_gate)
         {
@@ -49,8 +51,9 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
             var existing = same.FirstOrDefault(i => i.State is DownloadItemState.Queued or DownloadItemState.Downloading);
             if (existing is not null) return existing;
             // A paused or failed duplicate is queued again, so its .part is picked up instead of a second row appearing.
+            // It takes the new estimate for Create profile but keeps its revision, which the .part was downloaded from.
             var retry = same.FirstOrDefault(i => i.State is DownloadItemState.Paused or DownloadItemState.Failed);
-            if (retry is not null) Requeue(item = retry);
+            if (retry is not null) { Requeue(item = retry); item.ContextSize = context; item.KvType = kvType; item.Fit = fit; }
             else _items.Add(item = new() { RepoId = repoId, Sha = sha, Quantization = quant, ContextSize = context, KvType = kvType, Fit = fit });
             StartWorker();
         }
@@ -144,16 +147,21 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
         }
     }
 
-    // A cancelled item was already marked Paused (or removed) by whoever cancelled it, so only completion and real failures are recorded here.
+    // A cancelled item was already marked Paused (or removed) by whoever cancelled it, so only completion and failures are recorded here.
+    // A broken or stalled connection pauses the item so Resume continues the .part; a verification failure (InvalidDataException) fails it.
     private async Task DownloadAsync(DownloadItem item, CancellationToken token)
     {
         try
         {
-            var downloader = new ModelDownloader(item.Folder = modelsDirectory(), http, freeSpace);
+            var downloader = new ModelDownloader(item.Folder = modelsDirectory(), http, freeSpace, idleTimeout);
             var path = await downloader.DownloadAsync(item.RepoId, item.Sha, item.Quantization, new Sink(p => Update(item, i => i.Progress = p)), token);
             Update(item, i => { i.State = DownloadItemState.Completed; i.FinalPath = path; i.Message = "Downloaded."; }, finishing: true);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            Update(item, i => { i.State = DownloadItemState.Paused; i.Message = "Interrupted: " + ex.Message; });
+        }
         catch (Exception ex)
         {
             Update(item, i => { i.State = DownloadItemState.Failed; i.Message = ex.Message; });

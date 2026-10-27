@@ -22,7 +22,7 @@ public sealed class DownloadQueueTests : IDisposable
     private static HfQuantization Quant(HfFile file, string label = "Q4_K_M") => new(label, [file]);
     private static HttpClient Http(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) => new(new Handler(send));
     private static Task<HttpResponseMessage> Reply(HttpContent content, HttpStatusCode status = HttpStatusCode.OK) => Task.FromResult(new HttpResponseMessage(status) { Content = content });
-    private DownloadQueue Queue(HttpClient http) => new(() => _root, http, _ => long.MaxValue);
+    private DownloadQueue Queue(HttpClient http, TimeSpan? idleTimeout = null) => new(() => _root, http, _ => long.MaxValue, idleTimeout);
     private DownloadItem Add(DownloadQueue queue, string repo, HfFile file, string label = "Q4_K_M") => queue.Enqueue(repo, Sha, Quant(file, label), 4096, "f16", null);
     private string Part(string repo, HfFile file) => Path.Combine(_root, Path.Combine(repo.Split('/')), file.Path) + ".part";
     private string Final(string repo, HfFile file) => Path.Combine(_root, Path.Combine(repo.Split('/')), file.Path);
@@ -98,6 +98,51 @@ public sealed class DownloadQueueTests : IDisposable
         Assert.Equal(Corrupted, a.Message);
         Assert.Equal(Final("o/b", FileB), b.FinalPath);
         Assert.Null(a.FinalPath);
+    }
+
+    [Fact]
+    public async Task StalledDownloadIsPausedAndResumes()
+    {
+        var body = new Body(First, stallAfter: 150); var ranges = new List<string?>();
+        using var http = Http(request =>
+        {
+            lock (ranges) { ranges.Add(request.Headers.Range?.ToString()); if (ranges.Count > 1) return Reply(new ByteArrayContent(First[150..]) { Headers = { ContentRange = new ContentRangeHeaderValue(150, 299, 300) } }, HttpStatusCode.PartialContent); }
+            return Reply(new StreamContent(body));
+        });
+        await using var queue = Queue(http, TimeSpan.FromMilliseconds(200));
+        var item = Add(queue, "o/a", FileA);
+        await Until(() => item.State == DownloadItemState.Paused);
+        Assert.Equal("Interrupted: The download stalled. Resume to continue.", item.Message);
+        Assert.Equal(150, new FileInfo(Part("o/a", FileA)).Length);
+        queue.Resume(item);
+        await Until(() => item.State == DownloadItemState.Completed);
+        lock (ranges) Assert.Equal(new string?[] { null, "bytes=150-" }, ranges.ToArray());
+        Assert.Equal(First, File.ReadAllBytes(item.FinalPath!));
+    }
+
+    [Fact]
+    public async Task TransportFailurePausesButOtherFailuresFail()
+    {
+        using var http = Http(request => request.RequestUri!.AbsolutePath.Contains("/o/a/") ? throw new HttpRequestException("Connection reset.") : Reply(new ByteArrayContent(Second)));
+        await using var queue = Queue(http);
+        var a = Add(queue, "o/a", FileA); var b = Add(queue, "o/b", FileB with { Size = 7 });
+        await Until(() => a.State == DownloadItemState.Paused && b.State == DownloadItemState.Failed);
+        Assert.Equal("Interrupted: Connection reset.", a.Message);
+        Assert.Equal(Corrupted, b.Message);
+    }
+
+    [Fact]
+    public async Task RequeuedDuplicateTakesTheNewEstimateButKeepsItsRevision()
+    {
+        var body = new Body(First, stallAfter: 0);
+        using var http = Http(_ => Reply(new StreamContent(body)));
+        await using var queue = Queue(http);
+        var a = Add(queue, "o/a", FileA); var b = Add(queue, "o/b", FileB);
+        await body.Stalled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        queue.Pause(b);
+        var fit = new FitResult(FitLevel.Partial, 1, 1, 1, 1, 4, 3, true, false);
+        Assert.Same(b, queue.Enqueue("o/b", new string('b', 40), Quant(FileB), 8192, "q8_0", fit));
+        Assert.Equal((DownloadItemState.Queued, 8192, "q8_0", fit, Sha), (b.State, b.ContextSize, b.KvType, b.Fit, b.Sha));
     }
 
     [Theory]

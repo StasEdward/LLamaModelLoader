@@ -48,17 +48,12 @@ public static partial class HfNames
 
     public static bool IsSafeRepoPath(string path) =>
         path.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) && !path.Contains('\\') && !path.Contains(':') &&
-        path.Split('/').All(IsSafeSegment);
+        path.Split('/').All(PathRules.IsSafeSegment);
 
-    // Names Windows cannot create or silently rewrites (reserved devices, trailing dot/space, forbidden characters).
-    public static bool IsSafeSegment(string part)
-    {
-        var stem = part.Split('.')[0].TrimEnd(' ');
-        return !(part.Length == 0 || part is "." or ".." || part.EndsWith('.') || part.EndsWith(' ') ||
-            part.Any(c => c < 32 || "<>:\"|?*".Contains(c)) ||
-            new[] { "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$" }.Contains(stem, StringComparer.OrdinalIgnoreCase) ||
-            (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) && (char.IsDigit(stem[3]) || "¹²³".Contains(stem[3]))));
-    }
+    // Speculative heads, importance matrices and adapters are not models of their own. MTP heads ship inside main models, so "mtp" stays.
+    private static bool IsAuxiliary(string path) =>
+        path.Contains("mmproj", StringComparison.OrdinalIgnoreCase) ||
+        new[] { "eagle", "draft", "imatrix", "lora" }.Any(word => path[(path.LastIndexOf('/') + 1)..].Contains(word, StringComparison.OrdinalIgnoreCase));
 
     public static string QuantLabel(string path)
     {
@@ -74,7 +69,7 @@ public static partial class HfNames
         var shards = new Dictionary<(string Prefix, int Count), List<(int Number, HfFile File)>>();
         foreach (var file in files)
         {
-            if (file.Path.Contains("mmproj", StringComparison.OrdinalIgnoreCase) || !IsSafeRepoPath(file.Path)) continue;
+            if (IsAuxiliary(file.Path) || !IsSafeRepoPath(file.Path)) continue;
             var m = ShardName().Match(file.Path);
             if (!m.Success) { singles.Add(new HfQuantization(QuantLabel(file.Path), [file])); continue; }
             var key = (m.Groups[1].Value, int.Parse(m.Groups[3].Value));

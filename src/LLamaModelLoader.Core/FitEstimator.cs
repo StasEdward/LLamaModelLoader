@@ -61,8 +61,8 @@ public static class FitEstimator
 
     public static IReadOnlyList<int> ContextChoices(ulong? modelMax)
     {
-        if (modelMax is not { } max) return Contexts;
-        if (max <= (ulong)Contexts[0]) return [Contexts[0]];
+        if (modelMax is not { } max || max == 0) return Contexts;
+        if (max <= (ulong)Contexts[0]) return [(int)max];
         return [.. Contexts.Where(c => (ulong)c < max), (int)Math.Min(max, int.MaxValue)];
     }
 

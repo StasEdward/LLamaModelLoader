@@ -117,7 +117,7 @@ public sealed class DiscoverView : UserControl
     private string KvType => _kvType.SelectedItem as string ?? "f16";
     private long? Vram => double.TryParse(_manualVram.Text, NumberStyles.Float, CultureInfo.CurrentCulture, out var gib) && gib > 0 && gib < 1 << 20
         ? (long)(gib * (1L << 30)) : _gpuMemory?.TotalBytes;
-    private string? ModelsFolder => _vm.Configuration.Settings.ModelsDirectory is { Length: > 0 } folder && Path.IsPathFullyQualified(folder) && Directory.Exists(folder) ? folder : null;
+    private string? ModelsFolder => _vm.Configuration.Settings.ModelsDirectory is var folder && DownloadQueue.IsUsableModelsFolder(folder) ? folder : null;
 
     private async Task SearchAsync(bool more)
     {
@@ -168,7 +168,7 @@ public sealed class DiscoverView : UserControl
             var (shape, failure) = await ReadShapeAsync(details, cancellation.Token);
             if (version != _detailsVersion) return;
             _shape = shape;
-            _note.Text = shape is null ? $"Size-only estimates: the GGUF header could not be read. {failure}"
+            _note.Text = shape is null ? failure
                 : $"{shape.Layers} layers · KV cache estimated from the GGUF header" + (shape.Approximate ? " · approximate for this architecture" : "");
             RenderQuantizations();
         }
@@ -197,14 +197,24 @@ public sealed class DiscoverView : UserControl
     private void Inform(string text) { _status.Text = text; _statusIsError = false; }
     private void Fail(string text) { _status.Text = text; _statusIsError = true; }
 
-    // The KV shape is the same for every quantization of a repository, so the smallest file's header is enough.
-    private async Task<(GgufKvShape?, string?)> ReadShapeAsync(HfModelDetails details, CancellationToken token)
+    // The KV shape is the same for every quantization of a repository, so one small file's header is enough. A small file can still be
+    // a head of another architecture (a speculative draft, say) that the name filter missed, so a header that disagrees is skipped.
+    private async Task<(GgufKvShape? Shape, string Failure)> ReadShapeAsync(HfModelDetails details, CancellationToken token)
     {
+        const string Unreadable = "Size-only estimates: the GGUF header could not be read. ";
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
-        try { return (await RemoteGguf.ReadKvShapeAsync(_vm.HubHttp, details.Id, details.Sha, details.Quantizations.MinBy(q => q.TotalBytes)!.FirstPath, timeout.Token), null); }
-        catch (OperationCanceledException) when (!token.IsCancellationRequested) { return (null, "Hugging Face did not respond in time."); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { return (null, Describe(ex)); }
+        try
+        {
+            foreach (var quant in details.Quantizations.OrderBy(q => q.TotalBytes).Take(3))
+            {
+                var shape = await RemoteGguf.ReadKvShapeAsync(_vm.HubHttp, details.Id, details.Sha, quant.FirstPath, timeout.Token);
+                if (details.Architecture is null || details.Architecture.Equals(shape.Architecture, StringComparison.OrdinalIgnoreCase)) return (shape, "");
+            }
+            return (null, "The GGUF header did not match the model architecture; size-only estimate.");
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { return (null, Unreadable + "Hugging Face did not respond in time."); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return (null, Unreadable + Describe(ex)); }
     }
 
     private async Task ReadGpuAsync(Func<CancellationToken, Task<(GpuMemory?, string?)>> read)
@@ -253,14 +263,11 @@ public sealed class DiscoverView : UserControl
         if (active is not null) { button.Content = active.State == DownloadItemState.Queued ? "Queued" : "Downloading…"; return button; }
         try
         {
-            switch (downloader.GetState(details.Id, quant).State)
+            var (state, _, conflict) = downloader.GetState(details.Id, quant);
+            switch (state)
             {
                 case LocalModelState.Downloaded: button.Content = "Downloaded"; return button;
-                case LocalModelState.Conflict:
-                    // The file can change between GetState and this lookup, so a missing match must not throw from rendering.
-                    var path = quant.Parts.Select(p => (File: p, Path: downloader.Destination(details.Id, p)))
-                        .Where(p => Directory.Exists(p.Path) || (File.Exists(p.Path) && new FileInfo(p.Path).Length != p.File.Size)).Select(p => p.Path).FirstOrDefault();
-                    return Stack(button, Text(path is null ? "A different file already exists at the destination." : $"A different file already exists at {path}.", "muted"));
+                case LocalModelState.Conflict: return Stack(button, Text($"A different file already exists at {conflict}.", "muted"));
                 case LocalModelState.Partial: button.Content = "Resume"; break;
             }
         }
@@ -357,11 +364,16 @@ public sealed class DiscoverView : UserControl
         var line = $"{GiB(done):N2} / {GiB(total):N2} GiB";
         if (item.State == DownloadItemState.Downloading && progress is { BytesPerSecond: > 0 } p)
         {
-            line += $" · {p.BytesPerSecond / (1 << 20):N1} MiB/s · {TimeSpan.FromSeconds(Math.Ceiling((total - done) / p.BytesPerSecond)):hh\\:mm\\:ss} left";
+            line += $" · {p.BytesPerSecond / (1 << 20):N1} MiB/s";
+            if (Eta((total - done) / p.BytesPerSecond) is { } eta) line += $" · {eta} left";
             if (p.Parts > 1) line += $" · part {p.Part} of {p.Parts}";
         }
         text.Text = item.Message is { Length: > 0 } message && item.State != DownloadItemState.Completed ? line + "\n" + message : item.State == DownloadItemState.Completed ? item.FinalPath : line;
     }
+
+    // Hours are not wrapped into days, so a multi-day estimate stays readable. A near-zero speed gives no estimate rather than an overflow.
+    public static string? Eta(double seconds) =>
+        seconds is >= 0 and < 1e9 && TimeSpan.FromSeconds(Math.Ceiling(seconds)) is var left ? $"{(int)left.TotalHours}:{left:mm\\:ss}" : null;
 
     private async Task<bool> ConfirmAsync(string message)
     {
@@ -373,7 +385,7 @@ public sealed class DiscoverView : UserControl
 
     private static string Describe(Exception ex) => ex switch
     {
-        HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests or HttpStatusCode.Forbidden } => ex.Message,
+        HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests or HttpStatusCode.Forbidden or HttpStatusCode.NotFound or HttpStatusCode.Unauthorized } => ex.Message,
         HttpRequestException => Unavailable,
         _ => ex.Message,
     };

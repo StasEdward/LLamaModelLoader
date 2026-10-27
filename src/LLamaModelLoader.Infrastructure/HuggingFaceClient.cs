@@ -1,4 +1,4 @@
-using System.Net;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using LLamaModelLoader.Core;
@@ -9,6 +9,7 @@ namespace LLamaModelLoader.Infrastructure;
 public sealed partial class HuggingFaceClient(HttpClient http)
 {
     private const string Api = "https://huggingface.co/api/models";
+    private const int ResponseLimit = 8 * 1024 * 1024;
 
     [GeneratedRegex(@"^[0-9a-f]{40}\z", RegexOptions.IgnoreCase)]
     private static partial Regex CommitSha();
@@ -44,17 +45,31 @@ public sealed partial class HuggingFaceClient(HttpClient http)
             request.Headers.UserAgent.ParseAdd("LLamaModelLoader/1.0");
             request.Headers.Accept.ParseAdd("application/json");
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-            if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
-                throw new HttpRequestException("Hugging Face refused the request (rate limit). Try again later.", null, response.StatusCode);
+            HubResponses.ThrowIfRefused(response);
             response.EnsureSuccessStatusCode();
-            await response.Content.LoadIntoBufferAsync(8 * 1024 * 1024, timeout.Token);
             var link = response.Headers.TryGetValues("Link", out var values) ? string.Join(", ", values) : null;
-            return (await response.Content.ReadAsStringAsync(timeout.Token), link);
+            return (await ReadLimitedAsync(response.Content, timeout.Token), link);
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
             throw new HttpRequestException("Hugging Face did not respond in time. Try again later.");
         }
+    }
+
+    // An oversized body is not a connection problem, so it is reported like any other response the client cannot use.
+    private static async Task<string> ReadLimitedAsync(HttpContent content, CancellationToken token)
+    {
+        if (content.Headers.ContentLength > ResponseLimit) throw Unrecognized();
+        await using var body = await content.ReadAsStreamAsync(token);
+        using var buffer = new MemoryStream(); var chunk = new byte[81920]; int count;
+        while ((count = await body.ReadAsync(chunk, token)) != 0)
+        {
+            if (buffer.Length + count > ResponseLimit) throw Unrecognized();
+            buffer.Write(chunk, 0, count);
+        }
+        buffer.Position = 0;
+        using var reader = new StreamReader(buffer);
+        return await reader.ReadToEndAsync(token);
     }
 
     public static IReadOnlyList<HfModelSummary> ParseSearch(string json)
@@ -66,7 +81,7 @@ public sealed partial class HuggingFaceClient(HttpClient http)
         {
             if (item.ValueKind != JsonValueKind.Object || Str(item, "id") is not { } id || !HfNames.IsValidRepoId(id)) continue;
             models.Add(new HfModelSummary(id, Str(item, "author") ?? id[..id.IndexOf('/')], Int(item, "downloads") ?? 0, Int(item, "likes") ?? 0,
-                Str(item, "lastModified") is { } modified && DateTimeOffset.TryParse(modified, null, System.Globalization.DateTimeStyles.AssumeUniversal, out var parsed) ? parsed : null,
+                Str(item, "lastModified") is { } modified && DateTimeOffset.TryParse(modified, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed) ? parsed : null,
                 IsGated(item), Str(item, "pipeline_tag"), Tags(item)));
         }
         return models;

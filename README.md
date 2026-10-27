@@ -97,11 +97,11 @@ Updates are checked on demand. Internet access to the GitHub API and release dow
 
 Open **⇩ Discover** in the sidebar, between **Models** and **Chat**. Search uses the public Hugging Face API and lists GGUF repositories only. Sort by **Most downloaded**, **Trending**, **Most liked**, or **Recently updated**, and click **Load more** for the next page. **Open on Hugging Face** opens the repository page in your browser. Gated repositories are listed but cannot be downloaded.
 
-Select a repository to list its quantizations. Split GGUF parts are grouped into one entry, and `mmproj` files are hidden. For each quantization, the page estimates whether it fits your GPU:
+Select a repository to list its quantizations. Split GGUF parts are grouped into one entry. `mmproj` files, and files whose names mark them as speculative heads, drafts, importance matrices, or LoRA adapters (`eagle`, `draft`, `imatrix`, `lora`), are hidden. For each quantization, the page estimates whether it fits your GPU:
 
-- **Context** offers values from 4096 up to the model's maximum. The default is 16384, capped at that maximum.
+- **Context** offers values from 4096 up to the model's maximum, or only the maximum when it is below 4096. The default is 16384, capped at that maximum.
 - **KV cache type** is `f16`, `q8_0`, or `q4_0`.
-- The estimate is the weights (file sizes), plus the KV cache for the chosen context, plus compute buffers, plus a 1 GiB reserve. The KV cache size comes from the remote GGUF header, read through HTTP Range requests (up to 64 MiB), without downloading any weights.
+- The estimate is the weights (file sizes), plus the KV cache for the chosen context, plus compute buffers, plus a 1 GiB reserve. The KV cache size comes from the remote GGUF header, read through HTTP Range requests (up to 64 MiB), without downloading any weights. The smallest file is read first. A header whose architecture differs from the repository's is skipped, and up to three files are tried.
 - VRAM is detected with `nvidia-smi`: the total memory is used, and current use is shown for information. Enter **Manual VRAM (GiB)** to override it. Partial offload also counts system RAM, minus 8 GiB held back for the system.
 
 | Badge | Meaning |
@@ -118,6 +118,7 @@ Click **Download** to fetch a quantization:
 - Files go to `{Models folder}\{owner}\{repo}\…`, so a models folder must be set in **Settings**.
 - A file is written with a `.part` suffix and resumed on the next attempt with an HTTP Range request. Its size and SHA-256 are verified against the repository metadata before it receives its final name. A mismatch deletes the `.part` file.
 - Free disk space is checked first, with a 256 MiB margin.
+- An interrupted download becomes **Paused** and keeps its `.part` file, so **Resume** continues it. A connection that sends nothing for 60 seconds counts as interrupted. A verification failure marks the download **Failed**. The speed shown covers the last few seconds.
 - Downloads run one at a time, with **Pause**, **Resume**, and **Remove**. **Remove** deletes the `.part` file after confirmation. Downloads continue while you use other pages. The download list is kept only while the application runs. After a restart, select the quantization again and use **Resume** to continue from the `.part` file.
 - **Exit** asks for confirmation during a download. Exiting pauses it and keeps the `.part` file, so it can be resumed later.
 - Symbolic links and junctions inside the models folder are refused. The models folder itself may be one.

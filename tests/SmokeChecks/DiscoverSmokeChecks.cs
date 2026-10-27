@@ -22,7 +22,7 @@ public static class DiscoverSmokeChecks
         var models = Path.Combine(data, "models"); Directory.CreateDirectory(models);
         var server = Path.Combine(data, "llama-server.exe"); await File.WriteAllBytesAsync(server, []);
         await new ConfigurationStore(data).SaveAsync(new() { Settings = new() { ServerPath = server, ModelsDirectory = "" } });
-        var fixture = new Fixture(Header());
+        var fixture = new Fixture(Header("llama", 4, 65536), Header("eagle3", 1, 32768));
         ModelProfile? created = null;
         await using var vm = new MainViewModel(data, fixture);
         var window = new MainWindow(vm); window.Show();
@@ -71,6 +71,11 @@ public static class DiscoverSmokeChecks
         await SelectAsync("o/r");
         if (Badge("Q8_0") != "Partial offload · 3/4 layers" || Badge("F16") != "Does not fit")
             throw new Exception($"Unexpected fit badges: {Badge("Q4_K_M")} / {Badge("Q8_0")} / {Badge("F16")}");
+        // The smallest file is a one-layer head of another architecture; its header is read, rejected, and the next file's is used.
+        if (!All<TextBlock>().Any(t => t.Text == "4 layers · KV cache estimated from the GGUF header") || !fixture.Resolved.Contains("r-IQ1_S.gguf") || !fixture.Resolved.Contains("r-Q2_K.gguf"))
+            throw new Exception("A header of another architecture was not skipped: " + string.Join(", ", fixture.Resolved));
+        if (DiscoverView.Eta(90061) != "25:01:01" || DiscoverView.Eta(59.2) != "0:01:00" || DiscoverView.Eta(1e12) is not null)
+            throw new Exception("The remaining-time format wraps days or overflows");
         var gpuLine = $"NVIDIA GeForce RTX 5080 · {16303d / 1024:N2} GiB ({2128d / 1024:N2} GiB in use)";
         if (!All<TextBlock>().Any(t => t.Text == gpuLine)) throw new Exception("GPU line missing: " + gpuLine);
         foreach (var label in new[] { "Q2_K", "Q4_K_M", "Q8_0", "F16" })
@@ -126,8 +131,8 @@ public static class DiscoverSmokeChecks
         Console.WriteLine("UI: discover search, fit badges, download and create profile passed");
     }
 
-    // A synthetic GGUF header (4 layers, 8 KV heads, 128/128, three tokens, no tensors), zero-padded so it is also a complete downloadable file.
-    private static byte[] Header()
+    // A synthetic GGUF header (8 KV heads, 128/128, three tokens, no tensors), zero-padded so it is also a complete downloadable file.
+    private static byte[] Header(string architecture, uint layers, int size)
     {
         using var stream = new MemoryStream();
         using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
@@ -135,19 +140,21 @@ public static class DiscoverSmokeChecks
             void Text(string value) { var bytes = Encoding.UTF8.GetBytes(value); writer.Write((ulong)bytes.Length); writer.Write(bytes); }
             void Integer(string key, uint value) { Text(key); writer.Write(4u); writer.Write(value); }
             writer.Write("GGUF"u8); writer.Write(3u); writer.Write(0UL); writer.Write(8UL);
-            Text("general.architecture"); writer.Write(8u); Text("llama");
-            Integer("llama.block_count", 4); Integer("llama.attention.head_count", 32); Integer("llama.attention.head_count_kv", 8);
-            Integer("llama.attention.key_length", 128); Integer("llama.attention.value_length", 128); Integer("llama.embedding_length", 4096);
+            Text("general.architecture"); writer.Write(8u); Text(architecture);
+            Integer(architecture + ".block_count", layers); Integer(architecture + ".attention.head_count", 32); Integer(architecture + ".attention.head_count_kv", 8);
+            Integer(architecture + ".attention.key_length", 128); Integer(architecture + ".attention.value_length", 128); Integer(architecture + ".embedding_length", 4096);
             Text("tokenizer.ggml.tokens"); writer.Write(9u); writer.Write(8u); writer.Write(3UL); Text("a"); Text("b"); Text("c");
         }
-        var body = new byte[65536]; stream.ToArray().CopyTo(body, 0);
+        var body = new byte[size]; stream.ToArray().CopyTo(body, 0);
         return body;
     }
 
-    private sealed class Fixture(byte[] body) : HttpMessageHandler
+    private sealed class Fixture(byte[] body, byte[] head) : HttpMessageHandler
     {
         private int _requests;
+        private readonly List<string> _resolved = [];
         public byte[] Body => body;
+        public string[] Resolved { get { lock (_resolved) return [.. _resolved]; } }
         public string Mode { get; set; } = "ok";
         public int Requests => Volatile.Read(ref _requests);
 
@@ -171,6 +178,7 @@ public static class DiscoverSmokeChecks
                      "gguf":{"architecture":"llama","total":8030261248,"context_length":32768},
                      "siblings":[
                       {"rfilename":"README.md","size":1200},
+                      {"rfilename":"r-IQ1_S.gguf","size":{{{head.Length}}},"lfs":{"sha256":"{{{Convert.ToHexString(SHA256.HashData(head)).ToLowerInvariant()}}}"}},
                       {"rfilename":"r-Q2_K.gguf","size":65536,"lfs":{"sha256":"{{{Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant()}}}","size":65536}},
                       {"rfilename":"r-Q4_K_M.gguf","size":{{{2 * GiB}}},"lfs":{"sha256":"{{{new string('1', 64)}}}"}},
                       {"rfilename":"r-Q8_0.gguf","size":{{{15 * GiB}}},"lfs":{"sha256":"{{{new string('2', 64)}}}"}},
@@ -181,16 +189,18 @@ public static class DiscoverSmokeChecks
                     {"id":"g/gated","sha":"{{{Sha}}}","gated":"auto","tags":["gguf"],"gguf":{"architecture":"gemma3","context_length":131072},
                      "siblings":[{"rfilename":"gated-Q4_K_M.gguf","size":{{{3 * GiB}}},"lfs":{"sha256":"{{{new string('4', 64)}}}"}}]}
                     """);
-            if (path == $"/o/r/resolve/{Sha}/r-Q2_K.gguf")
+            if (path.StartsWith($"/o/r/resolve/{Sha}/", StringComparison.Ordinal) && path[(path.LastIndexOf('/') + 1)..] is var name &&
+                (name == "r-Q2_K.gguf" ? body : name == "r-IQ1_S.gguf" ? head : null) is { } file)
             {
+                lock (_resolved) _resolved.Add(name);
                 if (request.Headers.Range?.Ranges.Single() is { From: { } from } range)
                 {
-                    var to = Math.Min(range.To ?? body.Length - 1, body.Length - 1);
-                    var partial = new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = new ByteArrayContent(body, (int)from, (int)(to - from + 1)) };
-                    partial.Content.Headers.ContentRange = new ContentRangeHeaderValue(from, to, body.Length);
+                    var to = Math.Min(range.To ?? file.Length - 1, file.Length - 1);
+                    var partial = new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = new ByteArrayContent(file, (int)from, (int)(to - from + 1)) };
+                    partial.Content.Headers.ContentRange = new ContentRangeHeaderValue(from, to, file.Length);
                     return Task.FromResult(partial);
                 }
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(body) });
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(file) });
             }
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }

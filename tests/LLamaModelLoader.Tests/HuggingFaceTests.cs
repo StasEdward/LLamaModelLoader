@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using LLamaModelLoader.Core;
 using LLamaModelLoader.Infrastructure;
@@ -46,8 +47,10 @@ public sealed class HuggingFaceTests
         var groups = HfNames.GroupQuantizations([
             F("Q8_0/M-Q8_0-00001-of-00002.gguf", 10), F("Q8_0/M-Q8_0-00002-of-00002.gguf", 5),
             F("Q4_K_M/M-Q4_K_M-00001-of-00003.gguf", 4), F("Q4_K_M/M-Q4_K_M-00003-of-00003.gguf", 4), // part 2 missing
-            F("M-Q2_K.gguf", 3), F("mmproj-M-F16.gguf", 1)]);
-        Assert.Equal(["Q2_K", "Q8_0"], groups.Select(g => g.Label));
+            F("M-Q2_K.gguf", 3), F("mmproj-M-F16.gguf", 1),
+            // Speculative heads, importance matrices and adapters are not models of their own; MTP heads ship inside the main model.
+            F("eagle3-M-Q8_0.gguf", 1), F("M-DRAFT-Q4_0.gguf", 1), F("imatrix/M-imatrix-Q8_0.gguf", 1), F("M-LoRA-F16.gguf", 1), F("M-MTP-Q4_0.gguf", 20)]);
+        Assert.Equal(["Q2_K", "Q8_0", "Q4_0"], groups.Select(g => g.Label));
         Assert.Equal(15, groups[1].TotalBytes);
         Assert.Equal("Q8_0/M-Q8_0-00001-of-00002.gguf", groups[1].FirstPath);
         Assert.Equal(2, groups[1].Parts.Count);
@@ -86,6 +89,47 @@ public sealed class HuggingFaceTests
         Assert.Equal(1200, models[0].Downloads); Assert.Equal(34, models[0].Likes);
         Assert.Equal(new DateTimeOffset(2026, 3, 1, 10, 20, 30, TimeSpan.Zero), models[0].LastModified);
         Assert.Null(models[1].LastModified);
+    }
+
+    [Fact]
+    public async Task ParsesLastModifiedIndependentOfCulture()
+    {
+        var culture = CultureInfo.CurrentCulture;
+        try
+        {
+            // The Thai culture uses the Buddhist calendar, which would shift a culture-dependent parse by 543 years.
+            CultureInfo.CurrentCulture = new CultureInfo("th-TH");
+            await Task.Yield();
+            var model = Assert.Single(HuggingFaceClient.ParseSearch("""[{"id":"a/b","lastModified":"2026-03-01T10:20:30.000Z"}]"""));
+            Assert.Equal(new DateTimeOffset(2026, 3, 1, 10, 20, 30, TimeSpan.Zero), model.LastModified);
+        }
+        finally { CultureInfo.CurrentCulture = culture; }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OversizedResponseIsUnrecognized(bool declaredLength)
+    {
+        using var http = Http((_, _) =>
+        {
+            var content = new ByteArrayContent(new byte[8 * 1024 * 1024 + 1]);
+            if (!declaredLength) content.Headers.ContentLength = null;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        });
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() => new HuggingFaceClient(http).SearchAsync("q", HfSort.Downloads, null, default));
+        Assert.Equal("Unrecognized response from Hugging Face.", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task MissingOrPrivateRepositoryIsReported(HttpStatusCode status)
+    {
+        using var http = Http((_, _) => Task.FromResult(new HttpResponseMessage(status)));
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => new HuggingFaceClient(http).GetDetailsAsync("o/r", default));
+        Assert.Equal("The file or repository was not found or is not public.", ex.Message);
+        Assert.Equal(status, ex.StatusCode);
     }
 
     [Fact]

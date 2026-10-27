@@ -92,6 +92,9 @@ public sealed class FitEstimatorTests
     public void ContextChoicesAreCappedAtModelMax()
     {
         Assert.Equal([4096], FitEstimator.ContextChoices(4096));
+        Assert.Equal([2048], FitEstimator.ContextChoices(2048));
+        Assert.Equal(2048, FitEstimator.DefaultContext(2048));
+        Assert.Equal(FitEstimator.ContextChoices(null), FitEstimator.ContextChoices(0)); // A zero maximum means the repository did not report one.
         Assert.Equal([4096, 8192, 16384, 32768, 40960], FitEstimator.ContextChoices(40960));
         Assert.Equal(4096, FitEstimator.DefaultContext(4096));
         Assert.Equal(16384, FitEstimator.DefaultContext(40960));

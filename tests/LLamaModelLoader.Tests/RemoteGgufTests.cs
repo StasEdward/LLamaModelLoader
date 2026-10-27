@@ -96,6 +96,19 @@ public sealed class RemoteGgufTests
         Assert.Contains("range", error.Message);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "The file or repository was not found or is not public.")]
+    [InlineData(HttpStatusCode.Unauthorized, "The file or repository was not found or is not public.")]
+    [InlineData(HttpStatusCode.TooManyRequests, "Hugging Face refused the request (rate limit). Try again later.")]
+    [InlineData(HttpStatusCode.Forbidden, "Hugging Face refused the request (rate limit). Try again later.")]
+    public async Task ReportsRefusedRequests(HttpStatusCode status, string message)
+    {
+        var http = new HttpClient(new Handler((_, _) => Task.FromResult(new HttpResponseMessage(status))));
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => RemoteGguf.ReadKvShapeAsync(http, "o/r", Sha, "model.gguf", CancellationToken.None));
+        Assert.Equal(message, error.Message);
+        Assert.Equal(status, error.StatusCode);
+    }
+
     [Fact]
     public async Task RejectsRangesThatDoNotStartWhereRequestedAndOversizedBodies()
     {

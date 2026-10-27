@@ -133,7 +133,7 @@ public sealed class ServerInstaller
             var name = entry.FullName.Replace('\\', '/');
             var parts = name.TrimEnd('/').Split('/');
             var kind = (entry.ExternalAttributes >> 16) & 0xF000;
-            if (name.Length == 0 || parts.Any(p => !HfNames.IsSafeSegment(p)) || kind is not (0 or 0x8000 or 0x4000) || (entry.ExternalAttributes & 0x400) != 0)
+            if (name.Length == 0 || parts.Any(p => !PathRules.IsSafeSegment(p)) || kind is not (0 or 0x8000 or 0x4000) || (entry.ExternalAttributes & 0x400) != 0)
                 throw new InvalidDataException($"Unsafe archive entry: {name}");
             var path = Path.GetFullPath(Path.Combine(target, Path.Combine(parts)));
             if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !seen.Add(path) || parts[0].Equals(ManifestName, StringComparison.OrdinalIgnoreCase))
