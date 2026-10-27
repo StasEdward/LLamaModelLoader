@@ -17,7 +17,7 @@ Built with **.NET 10**, **Avalonia**, and **CommunityToolkit.Mvvm**. The interfa
 - **Profile import/export:** share one profile or all profiles as portable JSON, review imports, and locate matching local GGUF files.
 - **GGUF metadata:** inspect architecture, stored parameter count, tensor quantization types, training context, layers, tokenizer, and chat template without loading weights.
 - **Performance optimization:** benchmark a bounded set of settings or compare saved profiles, then save the best measured candidate as a new profile.
-- **Launch settings:** configure context size, GPU layers, CPU threads, batching, Flash Attention, KV cache types, sampling, and chat options.
+- **Launch settings:** configure context size, GPU layers, CPU threads, batching, Flash Attention, KV cache types, sampling, and chat options. Each option has a **?** help popup based on the llama.cpp server documentation, shows the server default in empty fields, and has a reset button that enters the recommended value.
 - **Speculative decoding:** configure the method, maximum draft tokens, and minimum draft probability, including `draft-mtp` for compatible models.
 - **Memory breakdown:** see model weights, main KV cache, recurrent state, MTP KV cache, and compute buffers, with separate GPU and CPU/host totals.
 - **Server statistics:** generation speed, session average, prompt processing, token counters, requests, slots, CPU, RAM, and NVIDIA GPU telemetry.

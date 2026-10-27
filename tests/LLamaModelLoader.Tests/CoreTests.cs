@@ -27,6 +27,29 @@ public sealed class CoreTests : IDisposable
         }
         finally { CultureInfo.CurrentCulture = original; }
     }
+    [Fact]
+    public void EveryOptionIsDocumentedAndItsRecommendedValueIsValid()
+    {
+        foreach (var def in OptionCatalog.All)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(def.Doc.Description), def.Property);
+            Assert.False(string.IsNullOrWhiteSpace(def.Doc.ServerDefault), def.Property);
+            if (def.Recommended is not { } recommended) continue;
+            var options = new LlamaOptions();
+            def.Set(options, recommended);
+            Assert.Equal(recommended, def.Format(options));
+            if (def.Choices is not null) Assert.Contains(recommended, def.Choices);
+        }
+    }
+    [Theory]
+    [InlineData("ContextSize", null)]
+    [InlineData("GpuLayers", null)]
+    [InlineData("BatchSize", "2048")]
+    [InlineData("Temperature", "0.8")]
+    [InlineData("ReasoningBudget", "8192")]
+    [InlineData("Parallel", "1")]
+    public void RecommendedValuesKeepFitControlledOptionsUnset(string property, string? expected) =>
+        Assert.Equal(expected, OptionCatalog.All.Single(d => d.Property == property).Recommended);
     [Theory]
     [InlineData("--port=9999")]
     [InlineData("-m")]

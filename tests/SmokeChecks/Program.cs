@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Interactivity;
+using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using LLamaModelLoader.Core;
@@ -212,6 +213,16 @@ else if (args[0] == "render")
         await Task.Delay(100); Dispatcher.UIThread.RunJobs();
         if (Option("ReasoningBudget").Text != "8192" || Option("ReasoningBudgetMessage").Text != "Enough thinking. Act now: make the next tool call.")
             throw new Exception("Reasoning defaults were not displayed");
+        Button Named(string name) => window.GetVisualDescendants().OfType<Button>().Single(x => x.Name == name);
+        Option("ReasoningBudget").Text = "";
+        if (Option("ReasoningBudget").PlaceholderText != "Default: -1 (unrestricted)") throw new Exception("Server default placeholder missing");
+        Named("ResetReasoningBudget").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Named("ResetChatTemplate").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        if (Option("ReasoningBudget").Text != "8192" || !string.IsNullOrEmpty(Option("ChatTemplate").Text)) throw new Exception("Reset did not apply recommended values");
+        var help = Named("HelpReasoningBudget");
+        if (ToolTip.GetTip(help) is not Control tip || !tip.GetLogicalDescendants().OfType<TextBlock>().Any(x => x.Text?.Contains("Token budget for thinking") == true) ||
+            help.Flyout is not Flyout { Content: Control flyout } || !flyout.GetLogicalDescendants().OfType<TextBlock>().Any(x => x.Text?.Contains("Server default: -1") == true))
+            throw new Exception("Option help is missing");
         Option("ReasoningBudget").Text = "4096";
         Option("ReasoningBudgetMessage").Text = "Enough thinking. Act now: make the next tool call.";
         chat.BringIntoView(); await Snapshot("reasoning-editor.png");
