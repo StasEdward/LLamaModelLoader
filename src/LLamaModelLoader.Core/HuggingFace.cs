@@ -15,6 +15,8 @@ public sealed record HfQuantization(string Label, IReadOnlyList<HfFile> Parts)
     public string FirstPath => Parts[0].Path;
 }
 
+public sealed record DownloadProgress(long DownloadedBytes, long TotalBytes, int Part, int Parts, double BytesPerSecond);
+
 public sealed record HfModelDetails(string Id, string Sha, bool Gated, string? Architecture, ulong? Parameters, ulong? ContextLength, string? License, IReadOnlyList<HfQuantization> Quantizations);
 
 public enum HfSort { Downloads, Likes, LastModified, Trending }

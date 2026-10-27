@@ -21,19 +21,19 @@ public sealed class ServerInstaller
     public IReadOnlyList<InstalledServer> GetInstalled()
     {
         if (!Directory.Exists(_root)) return [];
-        CheckPath(_root);
+        SafePaths.CheckNoReparsePoints(_root);
         var result = new List<InstalledServer>();
         foreach (var directory in Directory.EnumerateDirectories(_root).Where(d => !Path.GetFileName(d).StartsWith('.')))
         {
             try
             {
-                CheckPath(directory);
-                var manifestPath = Path.Combine(directory, ManifestName); CheckPath(manifestPath);
+                SafePaths.CheckNoReparsePoints(directory);
+                var manifestPath = Path.Combine(directory, ManifestName); SafePaths.CheckNoReparsePoints(manifestPath);
                 if (!File.Exists(manifestPath) || new FileInfo(manifestPath).Length > 128 * 1024) continue;
                 var manifest = JsonSerializer.Deserialize<InstalledServer>(File.ReadAllText(manifestPath));
                 if (manifest?.Build is null || Path.GetFileName(directory) != manifest.Build.DirectoryName) continue;
                 ServerReleaseClient.Validate(manifest.Build);
-                var exe = Path.Combine(directory, "llama-server.exe"); CheckPath(exe);
+                var exe = Path.Combine(directory, "llama-server.exe"); SafePaths.CheckNoReparsePoints(exe);
                 if (File.Exists(exe)) result.Add(manifest with { ExecutablePath = exe });
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { }
@@ -44,8 +44,8 @@ public sealed class ServerInstaller
     public async Task<InstalledServer> InstallAsync(ServerBuild build, IProgress<InstallationProgress>? progress = null, CancellationToken token = default)
     {
         ServerReleaseClient.Validate(build);
-        CheckPath(_root); Directory.CreateDirectory(_root);
-        var lockPath = Path.Combine(_root, ".install.lock"); CheckPath(lockPath);
+        SafePaths.CheckNoReparsePoints(_root); Directory.CreateDirectory(_root);
+        var lockPath = Path.Combine(_root, ".install.lock"); SafePaths.CheckNoReparsePoints(lockPath);
         using var installLock = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var destination = Child(build.DirectoryName);
         if (Directory.Exists(destination) || File.Exists(destination)) throw new IOException("This build already exists. Select it in Installed builds.");
@@ -72,7 +72,7 @@ public sealed class ServerInstaller
             var installed = new InstalledServer(build, DateTimeOffset.UtcNow, capabilities.Version, Path.Combine(destination, "llama-server.exe"));
             await File.WriteAllTextAsync(Path.Combine(payload, ManifestName), JsonSerializer.Serialize(installed, new JsonSerializerOptions { WriteIndented = true }), token);
             token.ThrowIfCancellationRequested();
-            CheckPath(destination); CheckPath(payload);
+            SafePaths.CheckNoReparsePoints(destination); SafePaths.CheckNoReparsePoints(payload);
             Directory.Move(payload, destination);
             progress?.Report(new("Installed. Select Use selected build, then save Settings.", downloaded, build.DownloadBytes));
             return installed;
@@ -80,7 +80,7 @@ public sealed class ServerInstaller
         finally
         {
             // Delete only this operation's known staging directory, never an installed or external server.
-            CheckPath(staging);
+            SafePaths.CheckNoReparsePoints(staging);
             if (Directory.Exists(staging))
             {
                 try { Directory.Delete(staging, recursive: true); }
@@ -162,14 +162,6 @@ public sealed class ServerInstaller
         var path = Path.GetFullPath(Path.Combine(_root, name));
         if (!path.StartsWith(_root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Installation path is outside the managed directory.");
-        CheckPath(path); return path;
-    }
-
-    private static void CheckPath(string path)
-    {
-        // Refuse junctions/symlinks anywhere in the path before writing, moving, or cleaning staging.
-        for (var current = Path.GetFullPath(path); current is not null; current = Path.GetDirectoryName(current))
-            if ((Directory.Exists(current) || File.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException("Managed installation paths must not contain symbolic links or junctions.");
+        SafePaths.CheckNoReparsePoints(path); return path;
     }
 }
