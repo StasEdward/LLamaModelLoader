@@ -133,7 +133,7 @@ public sealed class ServerInstaller
             var name = entry.FullName.Replace('\\', '/');
             var parts = name.TrimEnd('/').Split('/');
             var kind = (entry.ExternalAttributes >> 16) & 0xF000;
-            if (name.Length == 0 || parts.Any(UnsafePart) || kind is not (0 or 0x8000 or 0x4000) || (entry.ExternalAttributes & 0x400) != 0)
+            if (name.Length == 0 || parts.Any(p => !HfNames.IsSafeSegment(p)) || kind is not (0 or 0x8000 or 0x4000) || (entry.ExternalAttributes & 0x400) != 0)
                 throw new InvalidDataException($"Unsafe archive entry: {name}");
             var path = Path.GetFullPath(Path.Combine(target, Path.Combine(parts)));
             if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !seen.Add(path) || parts[0].Equals(ManifestName, StringComparison.OrdinalIgnoreCase))
@@ -155,15 +155,6 @@ public sealed class ServerInstaller
             }
             if (written != entry.Length) throw new InvalidDataException("Truncated archive entry.");
         }
-    }
-
-    private static bool UnsafePart(string part)
-    {
-        var stem = part.Split('.')[0].TrimEnd(' ');
-        return part.Length == 0 || part is "." or ".." || part.EndsWith('.') || part.EndsWith(' ') ||
-            part.Any(c => c < 32 || "<>:\"|?*".Contains(c)) ||
-            new[] { "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$" }.Contains(stem, StringComparer.OrdinalIgnoreCase) ||
-            (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) && (char.IsDigit(stem[3]) || "¹²³".Contains(stem[3])));
     }
 
     private string Child(string name)
