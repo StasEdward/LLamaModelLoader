@@ -59,7 +59,7 @@ public sealed class ModelDownloader
         {
             if (file.Size <= 0 || file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit)) throw new ArgumentException("The file size or SHA-256 is invalid.", nameof(quant));
             var uri = RemoteGguf.FileUri(repoId, sha, file.Path); var path = Destination(repoId, file);
-            SafePaths.CheckNoReparsePoints(path);
+            CheckNoLinks(path); CheckNoLinks(path + PartSuffix);
             var (status, partBytes) = Inspect(path, file);
             if (status == PartStatus.Conflict) throw new IOException($"A different file already exists at {path}.");
             if (status == PartStatus.Missing) remaining += file.Size - partBytes;
@@ -85,7 +85,7 @@ public sealed class ModelDownloader
     {
         foreach (var file in quant.Parts)
         {
-            var path = Destination(repoId, file); SafePaths.CheckNoReparsePoints(path);
+            var path = Destination(repoId, file); CheckNoLinks(path); CheckNoLinks(path + PartSuffix);
             File.Delete(path + PartSuffix);
         }
     }
@@ -94,6 +94,7 @@ public sealed class ModelDownloader
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var partPath = path + PartSuffix;
+        CheckNoLinks(path); CheckNoLinks(partPath); // Parts after the first are created long after the up-front check.
         var existing = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
         if (existing > file.Size) { File.Delete(partPath); existing = 0; }
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -101,6 +102,7 @@ public sealed class ModelDownloader
         transfer.Report(before + existing, part);
         var verified = existing == file.Size ? Matches(hash, file) : await ReceiveAsync(file, uri, partPath, existing, hash, before, part, transfer, token);
         if (!verified) { File.Delete(partPath); throw new InvalidDataException(Corrupted); }
+        CheckNoLinks(path); CheckNoLinks(partPath);
         File.Move(partPath, path);
     }
 
@@ -151,6 +153,8 @@ public sealed class ModelDownloader
         }
         return received == file.Size && Matches(hash, file);
     }
+
+    private void CheckNoLinks(string path) => SafePaths.CheckNoReparsePointsBelow(path, _root);
 
     private static bool Matches(IncrementalHash hash, HfFile file) => Convert.ToHexString(hash.GetHashAndReset()).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase);
 

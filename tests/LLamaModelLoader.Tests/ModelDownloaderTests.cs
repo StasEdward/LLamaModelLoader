@@ -301,17 +301,63 @@ public sealed class ModelDownloaderTests : IDisposable
         Assert.Throws<ArgumentException>(() => new ModelDownloader(@"\models", http));
     }
 
+    private static void Junction(string link, string target)
+    {
+        using var mklink = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"") { CreateNoWindow = true, RedirectStandardOutput = true })!;
+        mklink.StandardOutput.ReadToEnd(); mklink.WaitForExit();
+        Assert.Equal(0, mklink.ExitCode);
+    }
+
     [Fact]
     public async Task RefusesDestinationBehindJunction()
     {
         var elsewhere = Path.Combine(_root, "elsewhere"); Directory.CreateDirectory(elsewhere);
         var models = Path.Combine(_root, "models"); Directory.CreateDirectory(Path.Combine(models, "o"));
-        using (var mklink = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{Path.Combine(models, "o", "r")}\" \"{elsewhere}\"") { CreateNoWindow = true, RedirectStandardOutput = true }))
-            mklink!.WaitForExit();
+        Junction(Path.Combine(models, "o", "r"), elsewhere);
         using var http = Http((_, _) => throw new Exception("No request expected"));
         var downloader = new ModelDownloader(models, http, _ => long.MaxValue);
         await Assert.ThrowsAsync<IOException>(() => downloader.DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        Assert.Throws<IOException>(() => downloader.DeletePartial("o/r", Single(Shard1)));
         Assert.Empty(Directory.GetFileSystemEntries(elsewhere));
+    }
+
+    [Fact]
+    public async Task DownloadsIntoModelsFolderThatIsItselfAJunction()
+    {
+        var real = Path.Combine(_root, "real"); Directory.CreateDirectory(real);
+        var models = Path.Combine(_root, "models"); Junction(models, real);
+        using var http = Http((_, _) => Reply(Ok(First)));
+        var downloader = new ModelDownloader(models, http, _ => long.MaxValue);
+        var path = await downloader.DownloadAsync("o/r", Sha, Single(Shard1), null, default);
+        Assert.Equal(First, File.ReadAllBytes(path));
+        Assert.Equal(First, File.ReadAllBytes(Path.Combine(real, "o", "r", "Q8_0", "M-Q8_0-00001-of-00002.gguf")));
+        Assert.Equal(LocalModelState.Downloaded, downloader.GetState("o/r", Single(Shard1)).State);
+        downloader.DeletePartial("o/r", Single(Shard1));
+    }
+
+    [Fact]
+    public async Task RefusesPartSiblingThatIsALink()
+    {
+        // A junction stands in for the link, since creating file symlinks needs a privilege.
+        var elsewhere = Path.Combine(_root, "elsewhere"); Directory.CreateDirectory(elsewhere);
+        var dest = Dest(Shard1); Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        Junction(dest + ".part", elsewhere);
+        using var http = Http((_, _) => throw new Exception("No request expected"));
+        await Assert.ThrowsAsync<IOException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        Assert.Empty(Directory.GetFileSystemEntries(elsewhere));
+    }
+
+    [Fact]
+    public async Task RefusesPartFileThatIsASymlink()
+    {
+        var outside = Path.Combine(_root, "outside.bin"); Write(outside, [9, 9, 9]);
+        var dest = Dest(Shard1); Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        try { File.CreateSymbolicLink(dest + ".part", outside); }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException) { return; } // Creating symlinks needs a privilege this machine does not grant.
+        using var http = Http((_, _) => throw new Exception("No request expected"));
+        await Assert.ThrowsAsync<IOException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        Assert.Equal([9, 9, 9], File.ReadAllBytes(outside));
+        Assert.False(File.Exists(dest));
     }
 
     public void Dispose()
