@@ -238,6 +238,7 @@ else if (args[0] == "render")
         if (!window.GetVisualDescendants().OfType<TextBlock>().Any(x => x.Text == "Settings")) throw new Exception("Settings navigation failed");
         await InstallationSmokeChecks.RunAsync(window, directory, fixture);
         await ProfileTransferSmokeChecks.RunAsync(window, vm, directory);
+        await DiscoverSmokeChecks.RunAsync(directory);
         window.Close();
         return true;
     }, CancellationToken.None);

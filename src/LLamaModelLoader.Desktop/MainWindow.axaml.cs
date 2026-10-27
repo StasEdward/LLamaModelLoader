@@ -87,6 +87,7 @@ public partial class MainWindow : Window
     }
     private async void HomeClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Home);
     private async void ModelsClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Models);
+    private async void DiscoverClick(object? sender, RoutedEventArgs e) => await NavigateAsync(() => SetPage(new DiscoverView(_vm, p => { Editor(p); _dirty = true; })));
     private async void ChatClick(object? sender, RoutedEventArgs e) => await NavigateAsync(() => SetPage(_chat ??= new ChatView(_vm)));
     public Task CancelChatAsync() => _chat?.CancelAndWaitAsync() ?? Task.CompletedTask;
     private async void SettingsClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Settings);
@@ -104,6 +105,7 @@ public partial class MainWindow : Window
     private async void ExitClick(object? sender, RoutedEventArgs e)
     {
         if (_dirty && !await ConfirmAsync("Unsaved changes", "Exit the application without saving changes?")) return;
+        if (_vm.Downloads.IsActive && !await ConfirmAsync("Download in progress", "A model download is in progress. Exit and pause it? The partial file is kept for resuming.")) return;
         if (Application.Current is App app) await app.ExitAsync();
     }
     private void Home()
