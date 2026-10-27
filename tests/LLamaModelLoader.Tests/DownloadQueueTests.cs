@@ -132,6 +132,25 @@ public sealed class DownloadQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task RefusalsBeforeTransferFailInsteadOfPausing()
+    {
+        using var http = Http(request => request.RequestUri!.AbsolutePath.Contains("/o/missing/") ? Reply(new ByteArrayContent([]), HttpStatusCode.NotFound)
+            : request.RequestUri.AbsolutePath.Contains("/o/limited/") ? Reply(new ByteArrayContent([]), HttpStatusCode.TooManyRequests) : Reply(new ByteArrayContent(First)));
+        Directory.CreateDirectory(Path.GetDirectoryName(Final("o/conflict", FileA))!);
+        File.WriteAllBytes(Final("o/conflict", FileA), [1, 2, 3]);
+        await using var queue = Queue(http);
+        var missing = Add(queue, "o/missing", FileA); var limited = Add(queue, "o/limited", FileA); var conflict = Add(queue, "o/conflict", FileA);
+        await Until(() => missing.State == DownloadItemState.Failed && limited.State == DownloadItemState.Paused && conflict.State == DownloadItemState.Failed);
+        Assert.Equal("The file or repository was not found or is not public.", missing.Message);
+        Assert.StartsWith("Interrupted: ", limited.Message);
+        Assert.Equal($"A different file already exists at {Final("o/conflict", FileA)}.", conflict.Message);
+        await using var full = new DownloadQueue(() => _root, http, _ => 0);
+        var noSpace = full.Enqueue("o/space", Sha, Quant(FileA), 4096, "f16", null);
+        await Until(() => noSpace.State == DownloadItemState.Failed);
+        Assert.StartsWith("Not enough disk space:", noSpace.Message);
+    }
+
+    [Fact]
     public async Task RequeuedDuplicateTakesTheNewEstimateButKeepsItsRevision()
     {
         var body = new Body(First, stallAfter: 0);

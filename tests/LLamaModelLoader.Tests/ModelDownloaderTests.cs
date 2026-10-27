@@ -201,7 +201,7 @@ public sealed class ModelDownloaderTests : IDisposable
         var required = Sharded.TotalBytes + Margin; var asked = false;
         using var http = Http((_, _) => throw new Exception("No request expected"));
         var downloader = Downloader(http, path => { Assert.Equal(_root, path); asked = true; return required - 1; });
-        var ex = await Assert.ThrowsAsync<IOException>(() => downloader.DownloadAsync("o/r", Sha, Sharded, null, default));
+        var ex = await Assert.ThrowsAsync<DownloadRefusedException>(() => downloader.DownloadAsync("o/r", Sha, Sharded, null, default));
         Assert.Contains($"{required / 1073741824d:N2} GiB required", ex.Message);
         Assert.Contains($"{(required - 1) / 1073741824d:N2} GiB available", ex.Message);
         Assert.True(asked); Assert.False(Directory.Exists(_root));
@@ -251,7 +251,7 @@ public sealed class ModelDownloaderTests : IDisposable
     {
         var dest = Dest(Shard1); Write(dest, [1, 2, 3]);
         using var http = Http((_, _) => throw new Exception("No request expected"));
-        var ex = await Assert.ThrowsAsync<IOException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        var ex = await Assert.ThrowsAsync<DownloadRefusedException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
         Assert.Equal($"A different file already exists at {dest}.", ex.Message);
         Assert.Equal([1, 2, 3], File.ReadAllBytes(dest));
     }
@@ -362,8 +362,8 @@ public sealed class ModelDownloaderTests : IDisposable
         Junction(Path.Combine(models, "o", "r"), elsewhere);
         using var http = Http((_, _) => throw new Exception("No request expected"));
         var downloader = new ModelDownloader(models, http, _ => long.MaxValue);
-        await Assert.ThrowsAsync<IOException>(() => downloader.DownloadAsync("o/r", Sha, Single(Shard1), null, default));
-        Assert.Throws<IOException>(() => downloader.DeletePartial("o/r", Single(Shard1)));
+        await Assert.ThrowsAsync<DownloadRefusedException>(() => downloader.DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        Assert.Throws<DownloadRefusedException>(() => downloader.DeletePartial("o/r", Single(Shard1)));
         Assert.Empty(Directory.GetFileSystemEntries(elsewhere));
     }
 
@@ -389,7 +389,7 @@ public sealed class ModelDownloaderTests : IDisposable
         var dest = Dest(Shard1); Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
         Junction(dest + ".part", elsewhere);
         using var http = Http((_, _) => throw new Exception("No request expected"));
-        await Assert.ThrowsAsync<IOException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        await Assert.ThrowsAsync<DownloadRefusedException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
         Assert.Empty(Directory.GetFileSystemEntries(elsewhere));
     }
 
@@ -401,7 +401,7 @@ public sealed class ModelDownloaderTests : IDisposable
         try { File.CreateSymbolicLink(dest + ".part", outside); }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException) { return; } // Creating symlinks needs a privilege this machine does not grant.
         using var http = Http((_, _) => throw new Exception("No request expected"));
-        await Assert.ThrowsAsync<IOException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
+        await Assert.ThrowsAsync<DownloadRefusedException>(() => Downloader(http).DownloadAsync("o/r", Sha, Single(Shard1), null, default));
         Assert.Equal([9, 9, 9], File.ReadAllBytes(outside));
         Assert.False(File.Exists(dest));
     }

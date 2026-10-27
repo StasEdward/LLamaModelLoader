@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
 using LLamaModelLoader.Core;
 
 namespace LLamaModelLoader.Infrastructure;
@@ -148,7 +149,8 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
     }
 
     // A cancelled item was already marked Paused (or removed) by whoever cancelled it, so only completion and failures are recorded here.
-    // A broken or stalled connection pauses the item so Resume continues the .part; a verification failure (InvalidDataException) fails it.
+    // A broken or stalled connection (or a rate limit) pauses the item so Resume continues the .part. A verification failure, a refusal
+    // that needs the user to act first (disk space, a conflicting file, a link) and a missing or non-public file fail it.
     private async Task DownloadAsync(DownloadItem item, CancellationToken token)
     {
         try
@@ -158,7 +160,7 @@ public sealed class DownloadQueue(Func<string> modelsDirectory, HttpClient http,
             Update(item, i => { i.State = DownloadItemState.Completed; i.FinalPath = path; i.Message = "Downloaded."; }, finishing: true);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        catch (Exception ex) when (ex is HttpRequestException { StatusCode: not (HttpStatusCode.NotFound or HttpStatusCode.Unauthorized) } or IOException and not DownloadRefusedException)
         {
             Update(item, i => { i.State = DownloadItemState.Paused; i.Message = "Interrupted: " + ex.Message; });
         }

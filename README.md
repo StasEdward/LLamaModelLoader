@@ -118,7 +118,7 @@ Click **Download** to fetch a quantization:
 - Files go to `{Models folder}\{owner}\{repo}\…`, so a models folder must be set in **Settings**.
 - A file is written with a `.part` suffix and resumed on the next attempt with an HTTP Range request. Its size and SHA-256 are verified against the repository metadata before it receives its final name. A mismatch deletes the `.part` file.
 - Free disk space is checked first, with a 256 MiB margin.
-- An interrupted download becomes **Paused** and keeps its `.part` file, so **Resume** continues it. A connection that sends nothing for 60 seconds counts as interrupted. A verification failure marks the download **Failed**. The speed shown covers the last few seconds.
+- An interrupted download becomes **Paused** and keeps its `.part` file, so **Resume** continues it. A connection that sends nothing for 60 seconds, or a Hugging Face rate limit, counts as interrupted. A download is marked **Failed** when verification fails, when the file is missing or not public, or when it cannot start until you act: not enough disk space, a different file already at the destination, or a link inside the models folder. The speed shown covers the last few seconds.
 - Downloads run one at a time, with **Pause**, **Resume**, and **Remove**. **Remove** deletes the `.part` file after confirmation. Downloads continue while you use other pages. The download list is kept only while the application runs. After a restart, select the quantization again and use **Resume** to continue from the `.part` file.
 - **Exit** asks for confirmation during a download. Exiting pauses it and keeps the `.part` file, so it can be resumed later.
 - Symbolic links and junctions inside the models folder are refused. The models folder itself may be one.

@@ -8,6 +8,9 @@ namespace LLamaModelLoader.Infrastructure;
 
 public enum LocalModelState { NotDownloaded, Partial, Downloaded, Conflict }
 
+/// <summary>The download cannot start until the user acts (disk space, a conflicting file, a link); resuming alone will not help.</summary>
+public sealed class DownloadRefusedException(string message, Exception? inner = null) : IOException(message, inner);
+
 /// <summary>Downloads the parts of a public GGUF quantization into {models}\{owner}\{repo}\, resuming .part files and verifying size and SHA-256 before a part gets its final name.</summary>
 public sealed class ModelDownloader
 {
@@ -65,13 +68,13 @@ public sealed class ModelDownloader
             var uri = RemoteGguf.FileUri(repoId, sha, file.Path); var path = Destination(repoId, file);
             CheckNoLinks(path); CheckNoLinks(path + PartSuffix);
             var (status, partBytes) = Inspect(path, file);
-            if (status == PartStatus.Conflict) throw new IOException($"A different file already exists at {path}.");
+            if (status == PartStatus.Conflict) throw new DownloadRefusedException($"A different file already exists at {path}.");
             if (status == PartStatus.Missing) remaining += file.Size - partBytes;
             parts.Add((file, uri, path, status == PartStatus.Final));
         }
         if (parts.All(p => p.Final)) return parts[0].Path;
         var required = remaining + SpaceMargin; var available = _freeSpace(_root);
-        if (available < required) throw new IOException($"Not enough disk space: {required / 1073741824d:N2} GiB required, {available / 1073741824d:N2} GiB available.");
+        if (available < required) throw new DownloadRefusedException($"Not enough disk space: {required / 1073741824d:N2} GiB required, {available / 1073741824d:N2} GiB available.");
         var transfer = new Transfer(progress, quant.TotalBytes, parts.Count);
         long done = 0;
         for (var i = 0; i < parts.Count; i++)

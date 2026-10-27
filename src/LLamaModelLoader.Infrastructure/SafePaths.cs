@@ -19,6 +19,6 @@ internal static class SafePaths
             throw new ArgumentException("The path is outside the trusted folder.", nameof(path));
         for (var current = full; current is not null && !current.TrimEnd(Path.DirectorySeparatorChar).Equals(root, StringComparison.OrdinalIgnoreCase); current = Path.GetDirectoryName(current))
             if ((new FileInfo(current).LinkTarget ?? new DirectoryInfo(current).LinkTarget) is not null)
-                throw new IOException("Model download paths must not contain symbolic links or junctions.");
+                throw new DownloadRefusedException("Model download paths must not contain symbolic links or junctions.");
     }
 }
