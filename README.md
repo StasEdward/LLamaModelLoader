@@ -95,7 +95,7 @@ Updates are checked on demand. Internet access to the GitHub API and release dow
 
 ## Discover and download models
 
-Open **⇩ Discover** in the sidebar, between **Models** and **Chat**. Search uses the public Hugging Face API and lists GGUF repositories only. Sort by **Most downloaded**, **Most liked**, **Recently updated**, or **Trending**, and click **Load more** for the next page. Gated repositories cannot be downloaded; they offer **Open on Hugging Face** instead.
+Open **⇩ Discover** in the sidebar, between **Models** and **Chat**. Search uses the public Hugging Face API and lists GGUF repositories only. Sort by **Most downloaded**, **Trending**, **Most liked**, or **Recently updated**, and click **Load more** for the next page. **Open on Hugging Face** opens the repository page in your browser. Gated repositories are listed but cannot be downloaded.
 
 Select a repository to list its quantizations. Split GGUF parts are grouped into one entry, and `mmproj` files are hidden. For each quantization, the page estimates whether it fits your GPU:
 
@@ -108,17 +108,17 @@ Select a repository to list its quantizations. Split GGUF parts are grouped into
 | --- | --- |
 | Green **Fits in VRAM** | The whole model fits. **Create profile** then uses `--gpu-layers all`. |
 | Amber **Partial offload · N/M layers** | `N` of `M` layers fit on the GPU, and the rest use system RAM. **Create profile** suggests `--gpu-layers N`. Generation is slower. |
-| Red **Does not fit** | Even partial offload does not fit within VRAM plus available RAM. |
+| Red **Does not fit** | Even partial offload does not fit within VRAM plus system RAM (minus 8 GiB held back for the system). |
 | Grey **Unknown** | No estimate is possible. |
 
-A `≈` prefix marks an approximate estimate. It appears for sliding-window, MLA, and hybrid/recurrent models, where the full-attention formula is an upper bound. **size-only estimate** means the header could not be read, so the KV cache is not included. These badges are estimates: llama.cpp decides at load time, and **Loaded model memory** shows the real values.
+A `≈` prefix marks models whose KV cache llama.cpp allocates differently (sliding-window, MLA, hybrid/recurrent). For these the estimate is approximate and may be higher or lower than the real allocation. **size-only estimate** means the header could not be read, so the KV cache is not included. These badges are estimates: llama.cpp decides at load time, and **Loaded model memory** shows the real values.
 
 Click **Download** to fetch a quantization:
 
 - Files go to `{Models folder}\{owner}\{repo}\…`, so a models folder must be set in **Settings**.
 - A file is written with a `.part` suffix and resumed on the next attempt with an HTTP Range request. Its size and SHA-256 are verified against the repository metadata before it receives its final name. A mismatch deletes the `.part` file.
 - Free disk space is checked first, with a 256 MiB margin.
-- Downloads run one at a time, with **Pause**, **Resume**, and **Remove**. **Remove** deletes the `.part` file after confirmation. Downloads continue while you use other pages.
+- Downloads run one at a time, with **Pause**, **Resume**, and **Remove**. **Remove** deletes the `.part` file after confirmation. Downloads continue while you use other pages. The download list is kept only while the application runs. After a restart, select the quantization again and use **Resume** to continue from the `.part` file.
 - **Exit** asks for confirmation during a download. Exiting pauses it and keeps the `.part` file, so it can be resumed later.
 - Symbolic links and junctions inside the models folder are refused. The models folder itself may be one.
 - Only public repositories are supported. No token or cookie is stored or sent.
