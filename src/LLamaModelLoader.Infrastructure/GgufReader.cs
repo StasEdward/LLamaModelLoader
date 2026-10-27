@@ -56,6 +56,12 @@ public static class GgufReader
             types, parts.Count, bytes, version);
     }
 
+    private const string NoLayers = "The GGUF header has no layer information.";
+
+    // Header values are untrusted: keep shape numbers within int range and non-negative so the estimator can sum them safely.
+    private static int ShapeInt(object value) => Convert.ToDecimal(value, CultureInfo.InvariantCulture) is >= 0 and <= int.MaxValue and var number
+        ? (int)number : throw new InvalidDataException("A GGUF shape value is negative or out of range.");
+
     /// <summary>Reads only the metadata section, so a downloaded header prefix is enough. A prefix that ends early throws <see cref="GgufTruncatedException"/>.</summary>
     public static GgufKvShape ReadKvShape(Stream stream, CancellationToken token = default)
     {
@@ -63,22 +69,25 @@ public static class GgufReader
         var architecture = values.GetValueOrDefault("general.architecture") as string;
         int? Scalar(string suffix) => values.GetValueOrDefault(architecture + suffix) switch
         {
-            byte or sbyte or ushort or short or uint or int or ulong or long => Convert.ToInt32(values[architecture + suffix], CultureInfo.InvariantCulture),
+            byte or sbyte or ushort or short or uint or int or ulong or long => ShapeInt(values[architecture + suffix]),
             _ => null
         };
         int[]? Array(string suffix) => values.GetValueOrDefault(architecture + suffix) as int[];
         var layers = Scalar(".block_count");
-        if (architecture is null || layers is not (> 0 and <= 100_000)) throw new InvalidDataException("The GGUF header has no layer information.");
+        if (architecture is null || layers is not (> 0 and <= 100_000)) throw new InvalidDataException(NoLayers);
         int[]? PerLayer(string suffix) => Array(suffix) is { } array
             ? array.Length == layers ? array : throw new InvalidDataException($"The GGUF {suffix.TrimStart('.')} array does not match the layer count.")
             : Scalar(suffix) is { } scalar ? [.. Enumerable.Repeat(scalar, layers.Value)] : null;
         var heads = PerLayer(".attention.head_count");
-        var headsKv = PerLayer(".attention.head_count_kv") ?? heads ?? throw new InvalidDataException("The GGUF header has no layer information.");
+        var headsKv = PerLayer(".attention.head_count_kv") ?? heads ?? throw new InvalidDataException(NoLayers);
         int? Fallback() => Scalar(".embedding_length") is { } embedding && heads?.Max() is > 0 and var maximum ? embedding / maximum : null;
-        var key = Scalar(".attention.key_length") ?? Fallback() ?? throw new InvalidDataException("The GGUF header has no layer information.");
-        var value = Scalar(".attention.value_length") ?? Fallback() ?? throw new InvalidDataException("The GGUF header has no layer information.");
+        var key = Scalar(".attention.key_length") ?? Fallback() ?? throw new InvalidDataException(NoLayers);
+        var value = Scalar(".attention.value_length") ?? Fallback() ?? throw new InvalidDataException(NoLayers);
+        if (key <= 0 || value <= 0) throw new InvalidDataException("The GGUF key or value length is not positive.");
+        var loraRank = Scalar(".attention.kv_lora_rank"); var rope = Scalar(".rope.dimension_count");
+        if (loraRank <= 0 || rope <= 0) throw new InvalidDataException("The GGUF KV compression sizes are not positive.");
         var vocabulary = values.GetValueOrDefault("tokenizer.ggml.tokens.length") is ulong tokens ? tokens : (ulong?)null;
-        return new(architecture, layers.Value, headsKv, key, value, vocabulary, Scalar(".attention.kv_lora_rank"), Scalar(".rope.dimension_count"),
+        return new(architecture, layers.Value, headsKv, key, value, vocabulary, loraRank, rope,
             values.ContainsKey(architecture + ".attention.sliding_window"), values.Keys.Any(k => k.StartsWith(architecture + ".ssm.", StringComparison.Ordinal)));
     }
 
@@ -167,7 +176,7 @@ public static class GgufReader
                     if (retain && element <= 5 && count <= 4096)
                     {
                         var numbers = new int[count];
-                        for (var i = 0; i < numbers.Length; i++) numbers[i] = Convert.ToInt32(Value(element, false, out _), CultureInfo.InvariantCulture);
+                        for (var i = 0; i < numbers.Length; i++) numbers[i] = ShapeInt(Value(element, false, out _)!);
                         return numbers;
                     }
                     if (element == 8) { for (ulong i = 0; i < count; i++) String(false); }

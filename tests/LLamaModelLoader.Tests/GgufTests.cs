@@ -92,6 +92,7 @@ public sealed class GgufTests : IDisposable
         private void Text(string value) { var b = Encoding.UTF8.GetBytes(value); U64((ulong)b.Length); _stream.Write(b); }
         public void StringValue(string key, string value) { Text(key); U32(8); Text(value); Entries++; }
         public void Integer(string key, uint value) { Text(key); U32(4); U32(value); Entries++; }
+        public void Unsigned64(string key, ulong value) { Text(key); U32(10); U64(value); Entries++; }
         public void Int32Array(string key, params int[] values)
         {
             Text(key); U32(9); U32(5); U64((ulong)values.Length);
@@ -153,6 +154,16 @@ public sealed class GgufTests : IDisposable
         var noLayers = new Writer(); noLayers.StringValue("general.architecture", "llama");
         var header = new Writer(); header.Header(0, 1);
         Assert.Throws<InvalidDataException>(() => Shape([.. header.Bytes, .. noLayers.Bytes]));
+    }
+
+    [Fact]
+    public void RejectsOversizedNegativeAndZeroShapeValues()
+    {
+        // The later duplicate wins in the dictionary, so each case overrides one value of the valid header.
+        Assert.Throws<InvalidDataException>(() => Shape(KvHeader(w => w.Unsigned64("llama.block_count", (ulong)int.MaxValue + 1))));
+        Assert.Throws<InvalidDataException>(() => Shape(KvHeader(w => w.Int32Array("llama.attention.head_count_kv", 8, -1, 8, 8))));
+        Assert.Throws<InvalidDataException>(() => Shape(KvHeader(w => w.Integer("llama.attention.key_length", 0))));
+        Assert.Throws<InvalidDataException>(() => Shape(KvHeader(w => w.Integer("llama.attention.kv_lora_rank", 0))));
     }
 
     [Fact]
