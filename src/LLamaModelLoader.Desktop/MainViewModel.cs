@@ -68,8 +68,11 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     public IAsyncRelayCommand StartCommand { get; }
     public IAsyncRelayCommand StopCommand { get; }
     public IAsyncRelayCommand RestartCommand { get; }
+    // One client for search, header reads and downloads; each call brings its own timeout through its token.
+    public HttpClient HubHttp { get; }
+    public DownloadQueue Downloads { get; }
 
-    public MainViewModel(string directory)
+    public MainViewModel(string directory, HttpMessageHandler? huggingFaceHandler = null)
     {
         _store = new(directory);
         HadConfiguration = File.Exists(_store.FilePath);
@@ -79,6 +82,14 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
         _log = new(Path.Combine(directory, "logs"));
         _server = new(_probe, _log);
         _server.StatusChanged += _ => Dispatcher.UIThread.Post(Refresh);
+        HubHttp = new HttpClient(huggingFaceHandler ?? new HttpClientHandler { UseCookies = false }) { Timeout = Timeout.InfiniteTimeSpan };
+        Downloads = new DownloadQueue(() => Configuration.Settings.ModelsDirectory, HubHttp);
+        // Completed is raised again when the item is removed; only the raise while it is still listed is the completion.
+        Downloads.Changed += item =>
+        {
+            if (item.State == DownloadItemState.Completed && Downloads.Items.Contains(item))
+                Dispatcher.UIThread.Post(() => Notice = $"Downloaded {item.RepoId} {item.Quantization.Label}.");
+        };
         StartCommand = new AsyncRelayCommand(() => RunAsync(async () =>
         {
             if (SelectedProfile is { } p) await _server.StartAsync(Configuration.Settings, p);
@@ -230,6 +241,8 @@ public partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         _disposing = true; CancelOptimization();
         if (_optimizationTask is { } task) { try { await task; } catch { /* Shutdown still owns process cleanup. */ } }
+        try { await Downloads.DisposeAsync(); } catch { /* The server must still be stopped below. */ }
+        HubHttp.Dispose();
         await _server.DisposeAsync(); await _log.DisposeAsync(); _saveGate.Dispose();
     }
 }

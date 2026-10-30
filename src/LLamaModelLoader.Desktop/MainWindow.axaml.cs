@@ -59,6 +59,25 @@ public partial class MainWindow : Window
     }
     private static TextBox Input(string value = "", string? placeholder = null) => new() { Text = value, PlaceholderText = placeholder, HorizontalAlignment = HorizontalAlignment.Stretch };
     private static Control Field(string label, Control input, string? hint = null) => Stack(Text(label), input, Text(hint ?? "", "muted"));
+    // Shows the same help on hover (tooltip) and on click (flyout); each needs its own content instance.
+    private static Button HelpButton(string name, Func<Control> content)
+    {
+        var button = new Button { Name = name, Content = "?", Classes = { "help" }, VerticalAlignment = VerticalAlignment.Center, Flyout = new Flyout { Content = content() } };
+        ToolTip.SetTip(button, content());
+        ToolTip.SetShowDelay(button, 250);
+        return button;
+    }
+    private static Control HelpPanel(string title, string description, params string[] details)
+    {
+        var heading = Text(title); heading.FontWeight = FontWeight.SemiBold;
+        var panel = new StackPanel { Spacing = 8, MaxWidth = 440, Children = { heading, Text(description) } };
+        foreach (var detail in details) panel.Children.Add(Text(detail, "muted"));
+        return panel;
+    }
+    private static Control OptionHelp(OptionDefinition def) => HelpPanel($"{def.Label}  ({def.Flag})", def.Doc.Description,
+        $"Server default: {def.Doc.ServerDefault}",
+        def.Recommended is { } recommended ? $"Recommended: {recommended}" : "Recommended: leave blank so the server decides",
+        "Source: " + OptionDocumentation.Source);
     private void SetPage(Control content)
     { _scan?.Cancel(); _scan?.Dispose(); _scan = null; PageHost.Content = content; }
     private async Task NavigateAsync(Action action)
@@ -68,6 +87,7 @@ public partial class MainWindow : Window
     }
     private async void HomeClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Home);
     private async void ModelsClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Models);
+    private async void DiscoverClick(object? sender, RoutedEventArgs e) => await NavigateAsync(() => SetPage(new DiscoverView(_vm, p => { Editor(p); _dirty = true; })));
     private async void ChatClick(object? sender, RoutedEventArgs e) => await NavigateAsync(() => SetPage(_chat ??= new ChatView(_vm)));
     public Task CancelChatAsync() => _chat?.CancelAndWaitAsync() ?? Task.CompletedTask;
     private async void SettingsClick(object? sender, RoutedEventArgs e) => await NavigateAsync(Settings);
@@ -85,6 +105,7 @@ public partial class MainWindow : Window
     private async void ExitClick(object? sender, RoutedEventArgs e)
     {
         if (_dirty && !await ConfirmAsync("Unsaved changes", "Exit the application without saving changes?")) return;
+        if (_vm.Downloads.IsActive && !await ConfirmAsync("Download in progress", "A model download is in progress. Exit and pause it? The partial file is kept for resuming.")) return;
         if (Application.Current is App app) await app.ExitAsync();
     }
     private void Home()
@@ -239,7 +260,13 @@ public partial class MainWindow : Window
             catalog.ItemsSource = await _vm.ScanAsync(_scan.Token);
         }));
         var sections = Stack(Text("Profile settings", "title"), Text("Saving does not change the running server's settings.", "muted"),
-            Card(Stack(Field("Name", name, "Model name in the API (/v1/models). Passed as --alias; no commas. Changes apply after a restart."), Field("Description", description), Field("Model file", path), Row(browse, scan), catalog)));
+            Card(Stack(
+                Stack(Row(Text("Name"), HelpButton("HelpName", () => HelpPanel("Name  (--alias)", "Sets the model name alias used by the API, for example in /v1/models and the \"model\" field of requests. llama-server accepts comma-separated aliases; the application passes a single name, so commas are not allowed.", "Server default: the model file name", "Source: " + OptionDocumentation.Source))),
+                    name, Text("Model name in the API (/v1/models). Passed as --alias; no commas. Changes apply after a restart.", "muted")),
+                Field("Description", description),
+                Stack(Row(Text("Model file"), HelpButton("HelpModelPath", () => HelpPanel("Model file  (--model)", "Path of the GGUF model to load. For a split GGUF, select the first part; llama.cpp finds the remaining parts next to it.", "Source: " + OptionDocumentation.Source))),
+                    path, Text("", "muted")),
+                Row(browse, scan), catalog)));
         var metadata = new GgufMetadataView();
         metadata.Bind(GgufMetadataView.ModelPathProperty, new Binding(nameof(TextBox.Text)) { Source = path });
         sections.Children.Add(new Expander { Header = "GGUF metadata", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Card(metadata) });
@@ -249,21 +276,29 @@ public partial class MainWindow : Window
             foreach (var def in group)
             {
                 Control control;
+                Action reset;
                 if (def.Choices is not null)
                 {
                     var current = def.Format(profile.Options);
-                    var values = new[] { "Server default" }.Concat(def.Choices).Concat(current.Length > 0 && !def.Choices.Contains(current) ? [current] : Array.Empty<string>()).ToArray();
+                    var values = new[] { $"Server default ({def.Doc.ServerDefault})" }.Concat(def.Choices).Concat(current.Length > 0 && !def.Choices.Contains(current) ? [current] : Array.Empty<string>()).ToArray();
                     var combo = new ComboBox { ItemsSource = values, SelectedIndex = Math.Max(0, Array.IndexOf(values, def.Format(profile.Options))), HorizontalAlignment = HorizontalAlignment.Stretch };
                     fields[def] = () => combo.SelectedIndex <= 0 ? null : combo.SelectedItem?.ToString();
                     combo.SelectionChanged += (_, _) => Changed(); control = combo;
+                    reset = () => combo.SelectedIndex = def.Recommended is { } value ? Math.Max(0, Array.IndexOf(values, value)) : 0;
                 }
                 else
                 {
-                    var input = Input(def.Format(profile.Options), "Server default");
+                    var input = Input(def.Format(profile.Options), "Default: " + def.Doc.ServerDefault);
                     fields[def] = () => input.Text; input.TextChanged += (_, _) => Changed(); control = input;
+                    reset = () => input.Text = def.Recommended ?? "";
                 }
                 control.Name = def.Property;
-                panel.Children.Add(Field(def.Label, control, def.Hint + "  " + def.Flag));
+                var resetButton = new Button { Name = "Reset" + def.Property, Content = "↺", Classes = { "icon" }, Margin = new Thickness(8, 0, 0, 0) };
+                ToolTip.SetTip(resetButton, def.Recommended is { } recommended ? $"Reset to the recommended value: {recommended}" : $"Clear to use the server default: {def.Doc.ServerDefault}");
+                resetButton.Click += (_, _) => reset();
+                DockPanel.SetDock(resetButton, Dock.Right);
+                var inputRow = new DockPanel { LastChildFill = true, Children = { resetButton, control } };
+                panel.Children.Add(Stack(Row(Text(def.Label), HelpButton("Help" + def.Property, () => OptionHelp(def))), inputRow, Text(def.Hint + "  " + def.Flag, "muted")));
             }
             sections.Children.Add(new Expander { Header = group.Key, IsExpanded = group.Key == "General", HorizontalAlignment = HorizontalAlignment.Stretch, Content = Card(panel) });
         }

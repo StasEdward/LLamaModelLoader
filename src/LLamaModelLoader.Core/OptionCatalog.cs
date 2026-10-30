@@ -9,6 +9,10 @@ public sealed record OptionDefinition(string Property, string Group, string Labe
 {
     public PropertyInfo PropertyInfo => typeof(LlamaOptions).GetProperty(Property)!;
     public string Format(LlamaOptions options) => Convert.ToString(PropertyInfo.GetValue(options), CultureInfo.InvariantCulture) ?? "";
+    public OptionDoc Doc => OptionDocumentation.For(Property);
+    /// <summary>Value entered by the editor's reset button; falls back to the application default for new profiles.
+    /// Null means the option is best left unset so the server (and --fit) decides.</summary>
+    public string? Recommended => Doc.Recommended ?? (Format(new LlamaOptions()) is { Length: > 0 } value ? value : null);
 
     public void Set(LlamaOptions options, string? text)
     {
